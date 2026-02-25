@@ -1,0 +1,42 @@
+[project]
+name = "dbastion"
+version = "0.1.0"
+description = "Governed database access for AI agents"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [
+    { name = "Bakhtiyar Mautov", email = "bakhtiyar.mautov@gmail.com" },
+]
+dependencies = [
+    "click>=8.1,<9",
+    "sqlglot[c]>=26,<30",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+bigquery = ["google-cloud-bigquery>=3.20", "google-auth-oauthlib>=1.0"]
+duckdb = ["duckdb>=1.0"]
+all = ["dbastion[postgres]", "dbastion[bigquery]", "dbastion[duckdb]"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9", "dbastion[duckdb]"]
+
+[project.scripts]
+dbastion = "dbastion.cli:main"
+dbast = "dbastion.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbastion"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
