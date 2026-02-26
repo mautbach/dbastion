@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dbastion.diagnostics.types import Diagnostic, DiagnosticResult
+from dbastion.diagnostics.types import Applicability, Diagnostic, DiagnosticResult
 
 
 def render_json(result: DiagnosticResult) -> dict:
@@ -26,7 +26,7 @@ def render_text(result: DiagnosticResult) -> str:
         for note in d.notes:
             lines.append(f"  = note: {note}")
         for s in d.suggestions:
-            prefix = "fix" if s.applicability.value == "machine_applicable" else "help"
+            prefix = "fix" if s.applicability == Applicability.MACHINE_APPLICABLE else "help"
             lines.append(f"  = {prefix}: {s.message}")
 
     if result.healed_sql is not None:

@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.cache/
 uv.lock
 
 # IDE
@@ -27,3 +28,6 @@ Thumbs.db
 snapshots/
 *.parquet
 *.duckdb
+
+# Docker volumes
+docker/data/

@@ -21,6 +21,35 @@ from dbastion.adapters._base import (
 )
 
 
+def _detect_plan_warnings(plan_node: dict) -> list[str]:
+    """Walk the plan tree and flag risky operations."""
+    warnings: list[str] = []
+    _walk_plan(plan_node, warnings)
+    return warnings
+
+
+def _walk_plan(node: dict, warnings: list[str]) -> None:
+    node_type = node.get("Node Type", "")
+    rows = node.get("Plan Rows", 0)
+    relation = node.get("Relation Name", "")
+
+    if node_type == "Seq Scan" and rows > 100_000:
+        warnings.append(f"Seq Scan on {relation} (~{_format_rows(rows)} rows)")
+
+    for child in node.get("Plans", []):
+        _walk_plan(child, warnings)
+
+
+def _format_rows(n: float) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(int(n))
+
+
 class PostgresAdapter:
     """PostgreSQL adapter using psycopg (async)."""
 
@@ -85,35 +114,6 @@ class PostgresAdapter:
             warnings=warnings,
             summary=" | ".join(parts),
         )
-
-
-def _detect_plan_warnings(plan_node: dict) -> list[str]:
-    """Walk the plan tree and flag risky operations."""
-    warnings: list[str] = []
-    _walk_plan(plan_node, warnings)
-    return warnings
-
-
-def _walk_plan(node: dict, warnings: list[str]) -> None:
-    node_type = node.get("Node Type", "")
-    rows = node.get("Plan Rows", 0)
-    relation = node.get("Relation Name", "")
-
-    if node_type == "Seq Scan" and rows > 100_000:
-        warnings.append(f"Seq Scan on {relation} (~{_format_rows(rows)} rows)")
-
-    for child in node.get("Plans", []):
-        _walk_plan(child, warnings)
-
-
-def _format_rows(n: float) -> str:
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.1f}B"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(int(n))
 
     async def execute(
         self, sql: str, *, labels: dict[str, str] | None = None
@@ -192,3 +192,24 @@ def _format_rows(n: float) -> str:
 
     def dialect(self) -> str:
         return "postgres"
+
+    def dangerous_functions(self) -> frozenset[str]:
+        return frozenset({
+            # Process control
+            "pg_terminate_backend",
+            "pg_cancel_backend",
+            # File system access
+            "pg_read_file",
+            "pg_read_binary_file",
+            # Large object I/O
+            "lo_import",
+            "lo_export",
+            # Advisory locks (can cause deadlocks)
+            "pg_advisory_lock",
+            "pg_advisory_xact_lock",
+            # Config mutation
+            "set_config",
+            # Replication / WAL
+            "pg_switch_wal",
+            "pg_create_restore_point",
+        })

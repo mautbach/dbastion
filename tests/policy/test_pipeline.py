@@ -36,6 +36,48 @@ class TestClassificationBlocking:
         assert result.blocked
 
 
+class TestAdminBlocked:
+    def test_grant_always_blocked(self) -> None:
+        result = run_policy("GRANT SELECT ON users TO readonly_role", allow_write=True)
+        assert result.blocked
+        assert any(d.code == codes.ADMIN_BLOCKED for d in result.diagnostics)
+
+    def test_copy_always_blocked(self) -> None:
+        result = run_policy("COPY users FROM '/tmp/data.csv'", allow_write=True)
+        assert result.blocked
+        assert any(d.code == codes.ADMIN_BLOCKED for d in result.diagnostics)
+
+
+class TestUnclassifiedBlocked:
+    def test_unknown_statement_blocked(self) -> None:
+        # DO blocks parse as Command in sqlglot
+        result = run_policy("DO $$ BEGIN RAISE NOTICE 'hi'; END $$")
+        assert result.blocked
+
+
+class TestWritableCteBlocking:
+    def test_delete_in_cte_blocked(self) -> None:
+        sql = "WITH d AS (DELETE FROM t WHERE id=1 RETURNING *) SELECT * FROM d"
+        result = run_policy(sql)
+        assert result.blocked
+        assert any(d.code == codes.WRITE_BLOCKED for d in result.diagnostics)
+
+    def test_delete_in_cte_allowed_with_write(self) -> None:
+        sql = "WITH d AS (DELETE FROM t WHERE id=1 RETURNING *) SELECT * FROM d"
+        result = run_policy(sql, allow_write=True)
+        assert not result.blocked
+
+    def test_select_into_blocked(self) -> None:
+        result = run_policy("SELECT * INTO new_table FROM users")
+        assert result.blocked
+        assert any(d.code == codes.DDL_BLOCKED for d in result.diagnostics)
+
+    def test_truncate_blocked(self) -> None:
+        result = run_policy("TRUNCATE TABLE users")
+        assert result.blocked
+        assert any(d.code == codes.DDL_BLOCKED for d in result.diagnostics)
+
+
 class TestSafetyInPipeline:
     def test_delete_without_where(self) -> None:
         result = run_policy("DELETE FROM orders", allow_write=True)
@@ -53,6 +95,48 @@ class TestSafetyInPipeline:
 
     def test_update_with_where_allowed(self) -> None:
         result = run_policy("UPDATE orders SET status = 'x' WHERE id = 1", allow_write=True)
+        assert not result.blocked
+
+
+class TestDangerousFunctions:
+    _PG_BLOCKLIST = frozenset({
+        "pg_terminate_backend", "pg_cancel_backend", "pg_read_file",
+        "pg_read_binary_file", "lo_import", "lo_export",
+        "pg_advisory_lock", "pg_advisory_xact_lock", "set_config",
+        "pg_switch_wal", "pg_create_restore_point",
+    })
+
+    def test_pg_terminate_backend_blocked(self) -> None:
+        result = run_policy(
+            "SELECT pg_terminate_backend(pg_backend_pid())",
+            dangerous_functions=self._PG_BLOCKLIST,
+        )
+        assert result.blocked
+        assert any(d.code == codes.DANGEROUS_FUNCTION for d in result.diagnostics)
+
+    def test_pg_read_file_blocked(self) -> None:
+        result = run_policy(
+            "SELECT pg_read_file('/etc/passwd')",
+            dangerous_functions=self._PG_BLOCKLIST,
+        )
+        assert result.blocked
+
+    def test_set_config_blocked(self) -> None:
+        result = run_policy(
+            "SELECT set_config('log_connections', 'off', false)",
+            dangerous_functions=self._PG_BLOCKLIST,
+        )
+        assert result.blocked
+
+    def test_safe_function_allowed(self) -> None:
+        result = run_policy(
+            "SELECT now(), version()",
+            dangerous_functions=self._PG_BLOCKLIST,
+        )
+        assert not result.blocked
+
+    def test_no_blocklist_allows_everything(self) -> None:
+        result = run_policy("SELECT pg_terminate_backend(123)")
         assert not result.blocked
 
 

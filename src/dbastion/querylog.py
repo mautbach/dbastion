@@ -61,10 +61,13 @@ def log_query(
         "labels": labels,
     }
 
-    log_file = _today_file()
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_file, "a") as f:
-        f.write(json.dumps(entry, default=str) + "\n")
+    try:
+        log_file = _today_file()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except OSError:
+        pass  # Logging should never crash the query pipeline
 
 
 def cleanup_old_logs(*, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:

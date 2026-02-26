@@ -132,3 +132,6 @@ class DuckDBAdapter:
 
     def dialect(self) -> str:
         return "duckdb"
+
+    def dangerous_functions(self) -> frozenset[str]:
+        return frozenset()

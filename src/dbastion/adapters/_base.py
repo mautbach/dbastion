@@ -101,3 +101,10 @@ class DatabaseAdapter(Protocol):
     async def introspect(self, level: IntrospectionLevel) -> SchemaMetadata: ...
     def db_type(self) -> DatabaseType: ...
     def dialect(self) -> str: ...
+    def dangerous_functions(self) -> frozenset[str]:
+        """Functions that can cause damage even inside a SELECT.
+
+        Returns lowercase function names. Adapters override this with
+        database-specific blocklists.
+        """
+        return frozenset()

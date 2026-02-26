@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: dbastion-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: dbastion_test
+      POSTGRES_USER: dbastion
+      POSTGRES_PASSWORD: dbastion_test
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - pgdata:/var/lib/postgresql/data
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbastion -d dbastion_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

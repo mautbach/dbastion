@@ -10,7 +10,8 @@ import click
 from dbastion.adapters._base import AdapterError, ConnectionConfig, DatabaseType
 from dbastion.adapters._registry import get_adapter
 from dbastion.adapters.cost import check_cost_threshold
-from dbastion.cli._output import format_execution_result, format_result
+from dbastion.cli._output import format_execution_result, format_result, render_estimate
+from dbastion.connections import get_connection
 from dbastion.policy import run_policy
 from dbastion.querylog import cleanup_old_logs, log_query
 
@@ -18,10 +19,18 @@ _AUTO_LABELS = {"tool": "dbastion"}
 
 
 def _parse_db(value: str) -> ConnectionConfig:
-    """Parse --db 'type:key=val,key=val' into ConnectionConfig."""
+    """Resolve --db value: try named connection first, fall back to 'type:key=val' format."""
+    # Named connection from ~/.dbastion/connections.toml
+    config = get_connection(value)
+    if config is not None:
+        return config
+
+    # Raw format: type:key=val,key=val
     if ":" not in value:
         raise click.BadParameter(
-            f"Expected format 'type:key=val,...' (e.g. 'bigquery:project=my-proj'), got '{value}'",
+            f"Connection '{value}' not found in ~/.dbastion/connections.toml "
+            f"and not in 'type:key=val' format.\n"
+            f"  Add it: dbastion connect add {value} <type> <param>=<val>",
             param_hint="'--db'",
         )
     db_type_str, params_str = value.split(":", 1)
@@ -65,110 +74,102 @@ async def _run_query(
 ) -> int:
     """Run the full pipeline: policy → dry-run → execute. Returns exit code."""
     # Step 1: Policy engine
-    result = run_policy(sql, dialect=dialect, allow_write=allow_write, limit=limit)
-    output = format_result(result, output_format=output_format)
-    if output:
-        click.echo(output)
-    if result.blocked:
+    adapter_cls = get_adapter(config.db_type)
+    dangerous_fns = adapter_cls().dangerous_functions()
+    policy_result = run_policy(
+        sql, dialect=dialect, allow_write=allow_write, limit=limit,
+        dangerous_functions=dangerous_fns,
+    )
+
+    if policy_result.blocked:
+        click.echo(format_result(policy_result, output_format=output_format))
         log_query(
             sql=sql,
-            effective_sql=result.effective_sql,
+            effective_sql=policy_result.effective_sql,
             db=config.name,
             dialect=dialect,
-            tables=result.tables,
+            tables=policy_result.tables,
             blocked=True,
-            diagnostics=[str(d.code) for d in result.diagnostics],
+            diagnostics=[str(d.code) for d in policy_result.diagnostics],
             dry_run=True,
         )
         return 1
 
-    # Step 2: Load adapter + connect
-    adapter_cls = get_adapter(config.db_type)
+    # Step 2: Connect adapter
     adapter = adapter_cls()
     await adapter.connect(config)
 
     try:
-        # Step 3: Dry-run for cost estimation (default — always runs unless --skip-dry-run)
-        if not skip_dry_run:
-            estimate = await adapter.dry_run(result.effective_sql)
+        # Step 3: Dry-run for cost estimation
+        # --dry-run always triggers estimation, even with --skip-dry-run
+        estimate = None
+        cost_diag = None
+        if not skip_dry_run or dry_run_only:
+            estimate = await adapter.dry_run(policy_result.effective_sql)
             cost_diag = check_cost_threshold(
                 estimate, max_gb=max_gb, max_usd=max_usd, max_rows=max_rows,
             )
 
-            # Output estimate
-            if output_format == "json":
-                estimate_data: dict[str, object] = {
-                    "dry_run": True,
-                    "estimate": {
-                        "summary": estimate.summary,
-                    },
-                }
-                if estimate.estimated_gb is not None:
-                    estimate_data["estimate"]["estimated_gb"] = estimate.estimated_gb  # type: ignore[index]
-                    estimate_data["estimate"]["estimated_cost_usd"] = estimate.estimated_cost_usd  # type: ignore[index]
-                if estimate.estimated_rows is not None:
-                    estimate_data["estimate"]["estimated_rows"] = estimate.estimated_rows  # type: ignore[index]
-                if estimate.plan_node:
-                    estimate_data["estimate"]["plan"] = estimate.plan_node  # type: ignore[index]
-                if estimate.warnings:
-                    estimate_data["estimate"]["warnings"] = estimate.warnings  # type: ignore[index]
-                estimate_data["blocked"] = cost_diag is not None
-                click.echo(json.dumps(estimate_data, indent=2))
-            else:
-                click.echo(f"\nestimate: {estimate.summary}")
-                for w in estimate.warnings:
-                    click.echo(f"  warning: {w}")
+        # Emit output: blocked by cost threshold
+        if cost_diag is not None:
+            _emit_output(
+                output_format, policy_result, estimate=estimate,
+                cost_blocked=True, cost_diag=cost_diag,
+            )
+            log_query(
+                sql=sql,
+                effective_sql=policy_result.effective_sql,
+                db=config.name,
+                dialect=dialect,
+                tables=policy_result.tables,
+                blocked=True,
+                diagnostics=[str(d.code) for d in policy_result.diagnostics],
+                dry_run=True,
+                cost_gb=estimate.estimated_gb if estimate else None,
+                cost_usd=estimate.estimated_cost_usd if estimate else None,
+                labels=_AUTO_LABELS,
+            )
+            return 1
 
-            # Gate: block if over threshold
-            if cost_diag is not None:
-                click.echo(f"\nerror[{cost_diag.code}]: {cost_diag.message}")
-                for note in cost_diag.notes:
-                    click.echo(f"  = note: {note}")
-                log_query(
-                    sql=sql,
-                    effective_sql=result.effective_sql,
-                    db=config.name,
-                    dialect=dialect,
-                    tables=result.tables,
-                    blocked=True,
-                    diagnostics=[str(d.code) for d in result.diagnostics],
-                    dry_run=True,
-                    cost_gb=estimate.estimated_gb,
-                    cost_usd=estimate.estimated_cost_usd,
-                    labels=_AUTO_LABELS,
-                )
-                return 1
-
-            # --dry-run: stop after estimation, don't execute
-            if dry_run_only:
-                log_query(
-                    sql=sql,
-                    effective_sql=result.effective_sql,
-                    db=config.name,
-                    dialect=dialect,
-                    tables=result.tables,
-                    blocked=False,
-                    diagnostics=[str(d.code) for d in result.diagnostics],
-                    dry_run=True,
-                    cost_gb=estimate.estimated_gb,
-                    cost_usd=estimate.estimated_cost_usd,
-                    labels=_AUTO_LABELS,
-                )
-                return 0
+        # --dry-run: stop after estimation, don't execute
+        if dry_run_only:
+            _emit_output(
+                output_format, policy_result, estimate=estimate,
+                dry_run_only=True,
+            )
+            log_query(
+                sql=sql,
+                effective_sql=policy_result.effective_sql,
+                db=config.name,
+                dialect=dialect,
+                tables=policy_result.tables,
+                blocked=False,
+                diagnostics=[str(d.code) for d in policy_result.diagnostics],
+                dry_run=True,
+                cost_gb=estimate.estimated_gb if estimate else None,
+                cost_usd=estimate.estimated_cost_usd if estimate else None,
+                labels=_AUTO_LABELS,
+            )
+            return 0
 
         # Step 4: Execute
-        exec_result = await adapter.execute(result.effective_sql, labels=_AUTO_LABELS)
-        output = format_execution_result(exec_result, output_format=output_format)
-        click.echo(output)
+        exec_result = await adapter.execute(
+            policy_result.effective_sql, labels=_AUTO_LABELS,
+        )
+
+        _emit_output(
+            output_format, policy_result, estimate=estimate,
+            exec_result=exec_result,
+        )
 
         log_query(
             sql=sql,
-            effective_sql=result.effective_sql,
+            effective_sql=policy_result.effective_sql,
             db=config.name,
             dialect=dialect,
-            tables=result.tables,
+            tables=policy_result.tables,
             blocked=False,
-            diagnostics=[str(d.code) for d in result.diagnostics],
+            diagnostics=[str(d.code) for d in policy_result.diagnostics],
             cost_gb=exec_result.cost.estimated_gb if exec_result.cost else None,
             cost_usd=exec_result.cost.estimated_cost_usd if exec_result.cost else None,
             duration_ms=exec_result.duration_ms,
@@ -180,9 +181,69 @@ async def _run_query(
     return 0
 
 
+def _emit_output(
+    output_format: str,
+    policy_result: object,
+    *,
+    estimate: object | None = None,
+    exec_result: object | None = None,
+    cost_blocked: bool = False,
+    cost_diag: object | None = None,
+    dry_run_only: bool = False,
+) -> None:
+    """Emit a single output document (JSON or text)."""
+    from dbastion.adapters._base import CostEstimate, ExecutionResult
+    from dbastion.diagnostics.render import render_json
+    from dbastion.diagnostics.types import DiagnosticResult
+
+    assert isinstance(policy_result, DiagnosticResult)
+
+    if output_format == "json":
+        envelope: dict[str, object] = render_json(policy_result)
+        if isinstance(estimate, CostEstimate):
+            est_data: dict[str, object] = {"summary": estimate.summary}
+            if estimate.estimated_gb is not None:
+                est_data["estimated_gb"] = estimate.estimated_gb
+                est_data["estimated_cost_usd"] = estimate.estimated_cost_usd
+            if estimate.estimated_rows is not None:
+                est_data["estimated_rows"] = estimate.estimated_rows
+            if estimate.plan_node:
+                est_data["plan"] = estimate.plan_node
+            if estimate.warnings:
+                est_data["warnings"] = estimate.warnings
+            envelope["estimate"] = est_data
+        if cost_blocked and cost_diag is not None:
+            envelope["blocked"] = True
+            envelope["cost_error"] = str(cost_diag)
+        if isinstance(exec_result, ExecutionResult):
+            envelope["columns"] = exec_result.columns
+            envelope["rows"] = exec_result.rows
+            envelope["row_count"] = exec_result.row_count
+            envelope["duration_ms"] = exec_result.duration_ms
+        if dry_run_only:
+            envelope["dry_run"] = True
+        click.echo(json.dumps(envelope, indent=2, default=str))
+    else:
+        # Text: policy diagnostics
+        output = format_result(policy_result, output_format="text")
+        if output:
+            click.echo(output)
+        # Text: estimate
+        if isinstance(estimate, CostEstimate):
+            click.echo(render_estimate(estimate))
+        if cost_blocked and cost_diag is not None:
+            click.echo(f"\nerror: {cost_diag}")
+            return
+        if dry_run_only:
+            return
+        # Text: execution result
+        if isinstance(exec_result, ExecutionResult):
+            click.echo(format_execution_result(exec_result, output_format="text"))
+
+
 @click.command()
 @click.argument("sql")
-@click.option("--db", required=True, help="Database connection (type:key=val,...).")
+@click.option("--db", required=True, envvar="DBASTION_DB", help="Connection name or type:key=val.")
 @click.option("--dialect", default=None, help="SQL dialect (postgres, bigquery, duckdb, etc.)")
 @click.option("--allow-write", is_flag=True, help="Allow DML/DDL statements.")
 @click.option(

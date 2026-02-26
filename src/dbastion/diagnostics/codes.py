@@ -37,10 +37,13 @@ MULTIPLE_STATEMENTS = DiagnosticCode(202)
 UPDATE_WITHOUT_WHERE = DiagnosticCode(203)
 CROSS_JOIN_NO_CONDITION = DiagnosticCode(204)
 CONSTANT_CONDITION = DiagnosticCode(205)
+DANGEROUS_FUNCTION = DiagnosticCode(206)
 
 # Classification / access control (Q03xx)
 WRITE_BLOCKED = DiagnosticCode(301)
 DDL_BLOCKED = DiagnosticCode(302)
+ADMIN_BLOCKED = DiagnosticCode(303)
+UNCLASSIFIED_BLOCKED = DiagnosticCode(304)
 
 # Cost estimation (Q04xx)
 COST_OVER_THRESHOLD = DiagnosticCode(401)

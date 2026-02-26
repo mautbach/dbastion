@@ -32,6 +32,32 @@ def check_multiple_statements(sql: str) -> Diagnostic | None:
     )
 
 
+def check_dangerous_functions(
+    statement: exp.Expression,
+    sql: str,
+    blocked_functions: frozenset[str],
+) -> Diagnostic | None:
+    """Block calls to dangerous database-specific system functions."""
+    if not blocked_functions:
+        return None
+
+    for func in statement.find_all(exp.Anonymous, exp.Func):
+        name = ""
+        if isinstance(func, exp.Anonymous):
+            name = func.name
+        elif hasattr(func, "sql_name"):
+            name = func.sql_name()
+        elif hasattr(func, "key"):
+            name = func.key
+
+        if name.lower() in blocked_functions:
+            return Diagnostic.error(
+                codes.DANGEROUS_FUNCTION,
+                f"dangerous function blocked: {name}",
+            ).note("this function can cause damage even inside a SELECT")
+    return None
+
+
 def check_delete_without_where(statement: exp.Expression, sql: str) -> Diagnostic | None:
     """Block DELETE statements that have no WHERE clause."""
     if not isinstance(statement, exp.Delete):

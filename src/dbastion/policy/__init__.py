@@ -9,6 +9,7 @@ from dbastion.policy._types import StatementType
 from dbastion.policy.classify import classify
 from dbastion.policy.enrich import inject_limit
 from dbastion.policy.safety import (
+    check_dangerous_functions,
     check_delete_without_where,
     check_multiple_statements,
     check_update_without_where,
@@ -22,6 +23,7 @@ def run_policy(
     dialect: str | None = None,
     allow_write: bool = False,
     limit: int | None = 1000,
+    dangerous_functions: frozenset[str] = frozenset(),
 ) -> DiagnosticResult:
     """Run the full policy pipeline on a SQL string.
 
@@ -30,7 +32,7 @@ def run_policy(
         2. Parse SQL into AST
         3. Classify (READ/DML/DDL)
         4. Access control (block writes unless allowed)
-        5. Safety checks (DELETE/UPDATE without WHERE)
+        5. Safety checks (DELETE/UPDATE without WHERE, dangerous functions)
         6. Enrichment (auto-LIMIT)
         7. Return DiagnosticResult
 
@@ -39,6 +41,7 @@ def run_policy(
         dialect: SQL dialect for parsing (None = auto-detect).
         allow_write: If True, DML/DDL statements are allowed.
         limit: Auto-LIMIT value for unbounded SELECTs. None disables.
+        dangerous_functions: Adapter-specific function blocklist (lowercase).
 
     Returns:
         DiagnosticResult with all diagnostics and the effective SQL.
@@ -76,7 +79,21 @@ def run_policy(
     stmt_type = classify(statement)
 
     # Step 4: Access control
-    if stmt_type == StatementType.DML and not allow_write:
+    if stmt_type == StatementType.ADMIN:
+        diagnostics.append(
+            Diagnostic.error(
+                codes.ADMIN_BLOCKED,
+                "administrative operation blocked (GRANT, COPY, SET ROLE, etc.)",
+            )
+        )
+    elif stmt_type == StatementType.UNKNOWN:
+        diagnostics.append(
+            Diagnostic.error(
+                codes.UNCLASSIFIED_BLOCKED,
+                "unrecognized statement type blocked",
+            ).note("only SELECT, INSERT, UPDATE, DELETE, and DDL are allowed")
+        )
+    elif stmt_type == StatementType.DML and not allow_write:
         diagnostics.append(
             Diagnostic.error(codes.WRITE_BLOCKED, "write operation blocked")
             .note("pass --allow-write to enable DML operations")
@@ -92,6 +109,10 @@ def run_policy(
         diag = check(statement, sql)
         if diag is not None:
             diagnostics.append(diag)
+
+    func_diag = check_dangerous_functions(statement, sql, dangerous_functions)
+    if func_diag is not None:
+        diagnostics.append(func_diag)
 
     # Step 6: Enrichment (only if not already blocked and is a read)
     healed_sql = None
