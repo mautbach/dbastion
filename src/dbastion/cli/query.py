@@ -214,7 +214,7 @@ def _emit_output(
             envelope["estimate"] = est_data
         if cost_blocked and cost_diag is not None:
             envelope["blocked"] = True
-            envelope["cost_error"] = str(cost_diag)
+            envelope["cost_error"] = cost_diag.message
         if isinstance(exec_result, ExecutionResult):
             envelope["columns"] = exec_result.columns
             envelope["rows"] = exec_result.rows
@@ -232,7 +232,7 @@ def _emit_output(
         if isinstance(estimate, CostEstimate):
             click.echo(render_estimate(estimate))
         if cost_blocked and cost_diag is not None:
-            click.echo(f"\nerror: {cost_diag}")
+            click.echo(f"\nerror: {cost_diag.message}")
             return
         if dry_run_only:
             return

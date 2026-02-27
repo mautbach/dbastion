@@ -85,12 +85,13 @@ class BigQueryAdapter:
         t0 = time.monotonic()
         try:
             query_job = client.query(sql, job_config=job_config)
-            rows = list(query_job.result())
+            result_iter = query_job.result()
+            rows = list(result_iter)
         except Exception as e:
             raise AdapterError(f"BigQuery execution failed: {e}") from e
         duration_ms = (time.monotonic() - t0) * 1000
 
-        columns = [field.name for field in query_job.schema] if query_job.schema else []
+        columns = [field.name for field in result_iter.schema] if result_iter.schema else []
         result_rows = [dict(row.items()) for row in rows]
 
         cost = None
@@ -156,3 +157,6 @@ class BigQueryAdapter:
 
     def dialect(self) -> str:
         return "bigquery"
+
+    def dangerous_functions(self) -> frozenset[str]:
+        return frozenset()
