@@ -4,10 +4,30 @@ import sqlglot
 
 from dbastion.diagnostics import codes
 from dbastion.policy.safety import (
+    check_constant_condition,
+    check_cross_join_no_condition,
     check_delete_without_where,
     check_multiple_statements,
     check_update_without_where,
 )
+
+
+class TestTokenizerCrash:
+    def test_unclosed_comment_does_not_crash(self) -> None:
+        """Malformed SQL with unclosed comment must not raise an exception."""
+        from dbastion.policy import run_policy
+        result = run_policy("SELECT 1; /* broken")
+        assert result.blocked
+
+    def test_unclosed_string_does_not_crash(self) -> None:
+        from dbastion.policy import run_policy
+        result = run_policy("SELECT 'unclosed")
+        assert result.blocked
+
+    def test_null_byte_does_not_crash(self) -> None:
+        from dbastion.policy import run_policy
+        # Should not raise — sqlglot treats it as identifier, DB will reject at execution
+        run_policy("SELECT \x00")
 
 
 class TestMultipleStatements:
@@ -55,3 +75,114 @@ class TestUpdateWithoutWhere:
     def test_ignores_non_update(self) -> None:
         stmt = sqlglot.parse_one("SELECT 1")
         assert check_update_without_where(stmt, "SELECT 1") is None
+
+
+class TestCrossJoinNoCondition:
+    def test_explicit_cross_join(self) -> None:
+        sql = "SELECT * FROM a CROSS JOIN b"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_cross_join_no_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CROSS_JOIN_NO_CONDITION
+
+    def test_implicit_cross_join_no_where(self) -> None:
+        sql = "SELECT * FROM a, b"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_cross_join_no_condition(stmt, sql)
+        assert diag is not None
+
+    def test_implicit_join_with_where_ok(self) -> None:
+        sql = "SELECT * FROM a, b WHERE a.id = b.id"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+    def test_join_without_on_with_unrelated_where_warns(self) -> None:
+        sql = "SELECT * FROM a JOIN b WHERE a.id = 1"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_cross_join_no_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CROSS_JOIN_NO_CONDITION
+
+    def test_implicit_join_with_unrelated_where_warns(self) -> None:
+        sql = "SELECT * FROM a, b WHERE a.id = 1"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_cross_join_no_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CROSS_JOIN_NO_CONDITION
+
+    def test_join_without_on_with_link_predicate_ok(self) -> None:
+        sql = "SELECT * FROM a JOIN b WHERE a.id = b.id"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+    def test_alias_link_predicate_ok(self) -> None:
+        sql = "SELECT * FROM a AS x JOIN b AS y WHERE x.id = y.id"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+    def test_natural_join_ok(self) -> None:
+        sql = "SELECT * FROM a NATURAL JOIN b"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+    def test_proper_join_ok(self) -> None:
+        sql = "SELECT * FROM a JOIN b ON a.id = b.id"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+    def test_single_table_ok(self) -> None:
+        sql = "SELECT * FROM a"
+        stmt = sqlglot.parse_one(sql)
+        assert check_cross_join_no_condition(stmt, sql) is None
+
+
+class TestConstantCondition:
+    def test_where_1_eq_1(self) -> None:
+        sql = "SELECT * FROM t WHERE 1=1"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_constant_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CONSTANT_CONDITION
+
+    def test_where_true(self) -> None:
+        sql = "SELECT * FROM t WHERE true"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_constant_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CONSTANT_CONDITION
+
+    def test_nested_or_true(self) -> None:
+        sql = "SELECT * FROM t WHERE id = 1 OR TRUE"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_constant_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CONSTANT_CONDITION
+
+    def test_nested_and_tautology(self) -> None:
+        sql = "SELECT * FROM t WHERE 1=1 AND id = 1"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_constant_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CONSTANT_CONDITION
+
+    def test_literal_string_tautology(self) -> None:
+        sql = "SELECT * FROM t WHERE 'x' = 'x'"
+        stmt = sqlglot.parse_one(sql)
+        diag = check_constant_condition(stmt, sql)
+        assert diag is not None
+        assert diag.code == codes.CONSTANT_CONDITION
+
+    def test_normal_where_ok(self) -> None:
+        sql = "SELECT * FROM t WHERE id = 1"
+        stmt = sqlglot.parse_one(sql)
+        assert check_constant_condition(stmt, sql) is None
+
+    def test_non_tautology_literal_comparison_ok(self) -> None:
+        sql = "SELECT * FROM t WHERE 1 = 2"
+        stmt = sqlglot.parse_one(sql)
+        assert check_constant_condition(stmt, sql) is None
+
+    def test_no_where_ok(self) -> None:
+        sql = "SELECT * FROM t"
+        stmt = sqlglot.parse_one(sql)
+        assert check_constant_condition(stmt, sql) is None

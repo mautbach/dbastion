@@ -9,6 +9,8 @@ from dbastion.policy._types import StatementType
 from dbastion.policy.classify import classify
 from dbastion.policy.enrich import inject_limit
 from dbastion.policy.safety import (
+    check_constant_condition,
+    check_cross_join_no_condition,
     check_dangerous_functions,
     check_delete_without_where,
     check_multiple_statements,
@@ -63,7 +65,7 @@ def run_policy(
     # Step 2: Parse
     try:
         statement = sqlglot.parse_one(sql, dialect=dialect)
-    except sqlglot.errors.ParseError as e:
+    except sqlglot.errors.SqlglotError as e:
         diagnostics.append(
             Diagnostic.error(codes.SYNTAX_ERROR, f"SQL syntax error: {e}")
         )
@@ -105,7 +107,12 @@ def run_policy(
         )
 
     # Step 5: Safety checks
-    for check in [check_delete_without_where, check_update_without_where]:
+    for check in [
+        check_delete_without_where,
+        check_update_without_where,
+        check_cross_join_no_condition,
+        check_constant_condition,
+    ]:
         diag = check(statement, sql)
         if diag is not None:
             diagnostics.append(diag)
