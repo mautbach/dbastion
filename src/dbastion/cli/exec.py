@@ -1,7 +1,8 @@
-"""The `query` command: policy engine → dry-run → execute pipeline.
+"""The `exec` command: execute validated writes (DML/DDL).
 
-Reads are executed directly. Writes (DML/DDL) are validated and dry-run
-only — use `dbastion exec` to execute writes.
+This command is intended for writes that `dbastion query` validated but
+did not execute.  In agent workflows the harness (Claude Code, Codex,
+etc.) should require human approval before invoking this command.
 """
 
 from __future__ import annotations
@@ -15,19 +16,16 @@ from dbastion.adapters._base import AdapterError, ConnectionConfig
 from dbastion.adapters._registry import get_adapter
 from dbastion.adapters.cost import check_cost_threshold
 from dbastion.cli._output import format_result
-from dbastion.cli._shared import AUTO_LABELS, emit_output, parse_db, resolve_sql_stdin
+from dbastion.cli._shared import AUTO_LABELS, emit_output, parse_db
 from dbastion.diagnostics import Diagnostic, codes
 from dbastion.policy import run_policy
 from dbastion.querylog import cleanup_old_logs, log_query
 
-_WRITE_CLASSIFICATIONS = {"dml", "ddl"}
 
-
-async def _run_query(
+async def _run_exec(
     sql: str,
     config: ConnectionConfig,
     *,
-    dry_run_only: bool,
     skip_dry_run: bool,
     dialect: str | None,
     limit: int | None,
@@ -36,8 +34,8 @@ async def _run_query(
     max_rows: float | None,
     output_format: str,
 ) -> int:
-    """Run the full pipeline: policy → dry-run → execute. Returns exit code."""
-    # Step 1: Policy engine (allow_write=True — access control is at command level)
+    """Run the write pipeline: policy → dry-run → execute. Returns exit code."""
+    # Step 1: Policy engine (allow_write=True for exec)
     adapter_cls = get_adapter(config.db_type)
     dangerous_fns = adapter_cls().dangerous_functions()
     policy_result = run_policy(
@@ -45,12 +43,20 @@ async def _run_query(
         dangerous_functions=dangerous_fns,
     )
 
-    is_write = policy_result.classification in _WRITE_CLASSIFICATIONS
+    # exec is for writes only — reads should go through query
+    if policy_result.classification == "read":
+        if output_format == "json":
+            envelope = {"decision": "deny", "blocked": True,
+                        "error": "exec is for write operations; use `dbastion query` for reads"}
+            click.echo(json.dumps(envelope, indent=2))
+        else:
+            click.echo("error: exec is for write operations; use `dbastion query` for reads",
+                        err=True)
+        return 1
 
     if policy_result.blocked:
-        decision = "deny"
         if output_format == "json":
-            emit_output(output_format, policy_result, decision=decision)
+            emit_output(output_format, policy_result, decision="deny")
         else:
             click.echo(format_result(policy_result, output_format=output_format))
         log_query(
@@ -76,15 +82,13 @@ async def _run_query(
         # Adapters return None when EXPLAIN is unsupported (e.g. DDL on Postgres).
         estimate = None
         cost_diag = None
-        want_dry_run = is_write or not skip_dry_run or dry_run_only
-        if want_dry_run:
+        if not skip_dry_run:
             estimate = await adapter.dry_run(policy_result.effective_sql)
             if estimate is not None:
                 cost_diag = check_cost_threshold(
                     estimate, max_gb=max_gb, max_usd=max_usd, max_rows=max_rows,
                 )
             elif has_cost_thresholds:
-                # Thresholds requested but adapter can't estimate → deny.
                 cost_diag = Diagnostic.error(
                     codes.COST_OVER_THRESHOLD,
                     "cost thresholds requested but database cannot estimate "
@@ -112,48 +116,7 @@ async def _run_query(
             )
             return 1
 
-        # Writes: validate + dry-run only → ask
-        if is_write:
-            emit_output(
-                output_format, policy_result, estimate=estimate, decision="ask",
-            )
-            log_query(
-                sql=sql,
-                effective_sql=policy_result.effective_sql,
-                db=config.name,
-                dialect=dialect,
-                tables=policy_result.tables,
-                blocked=False,
-                diagnostics=[str(d.code) for d in policy_result.diagnostics],
-                dry_run=True,
-                cost_gb=estimate.estimated_gb if estimate else None,
-                cost_usd=estimate.estimated_cost_usd if estimate else None,
-                labels=AUTO_LABELS,
-            )
-            return 0
-
-        # --dry-run: stop after estimation, don't execute
-        if dry_run_only:
-            emit_output(
-                output_format, policy_result, estimate=estimate,
-                dry_run_only=True, decision="allow",
-            )
-            log_query(
-                sql=sql,
-                effective_sql=policy_result.effective_sql,
-                db=config.name,
-                dialect=dialect,
-                tables=policy_result.tables,
-                blocked=False,
-                diagnostics=[str(d.code) for d in policy_result.diagnostics],
-                dry_run=True,
-                cost_gb=estimate.estimated_gb if estimate else None,
-                cost_usd=estimate.estimated_cost_usd if estimate else None,
-                labels=AUTO_LABELS,
-            )
-            return 0
-
-        # Step 4: Execute (reads only)
+        # Step 4: Execute
         exec_result = await adapter.execute(
             policy_result.effective_sql, labels=AUTO_LABELS,
         )
@@ -182,9 +145,8 @@ async def _run_query(
     return 0
 
 
-@click.command()
-@click.argument("sql", required=False, default=None)
-@click.option("--from-stdin", is_flag=True, help="Read SQL from stdin instead of argument.")
+@click.command("exec")
+@click.argument("sql")
 @click.option("--db", required=True, envvar="DBASTION_DB", help="Connection name or type:key=val.")
 @click.option("--dialect", default=None, help="SQL dialect (postgres, bigquery, duckdb, etc.)")
 @click.option(
@@ -196,32 +158,29 @@ async def _run_query(
 )
 @click.option("--limit", type=int, default=1000, help="Auto-LIMIT value (0 to disable).")
 @click.option("--no-limit", is_flag=True, help="Disable auto-LIMIT injection.")
-@click.option("--dry-run", is_flag=True, help="Estimate cost only, do not execute.")
 @click.option("--skip-dry-run", is_flag=True, help="Skip cost estimation, execute directly.")
 @click.option("--max-gb", type=float, default=None, help="Block if scan exceeds N GB (BigQuery).")
 @click.option("--max-usd", type=float, default=None, help="Block if cost exceeds $N (BigQuery).")
 @click.option("--max-rows", type=float, default=None, help="Block if rows exceed N.")
-def query(
-    sql: str | None,
-    from_stdin: bool,
+def exec_cmd(
+    sql: str,
     db: str,
     dialect: str | None,
     output_format: str,
     limit: int,
     no_limit: bool,
-    dry_run: bool,
     skip_dry_run: bool,
     max_gb: float | None,
     max_usd: float | None,
     max_rows: float | None,
 ) -> None:
-    """Execute a guarded SQL query.
+    """Execute a write (DML/DDL) query.
 
-    Reads are executed directly. Writes (DML/DDL) are validated and
-    cost-estimated but not executed — use `dbastion exec` to run them.
+    Use `dbastion query` first to validate and estimate cost.
+    This command is intended for agent workflows where the harness
+    requires human approval before execution.
     """
     cleanup_old_logs()
-    sql = resolve_sql_stdin(sql, from_stdin)
     effective_limit = None if no_limit else (limit if limit > 0 else None)
 
     try:
@@ -237,10 +196,9 @@ def query(
             dialect = adapter_cls().dialect()
 
         exit_code = asyncio.run(
-            _run_query(
+            _run_exec(
                 sql,
                 config,
-                dry_run_only=dry_run,
                 skip_dry_run=skip_dry_run,
                 dialect=dialect,
                 limit=effective_limit,

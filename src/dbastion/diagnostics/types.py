@@ -150,6 +150,7 @@ class DiagnosticResult:
     diagnostics: list[Diagnostic]
     blocked: bool
     tables: list[str] = field(default_factory=list)
+    classification: str | None = None
 
     @property
     def effective_sql(self) -> str:

@@ -54,7 +54,7 @@ class BigQueryAdapter:
             raise AdapterError("Not connected. Call connect() first.")
         return self._client
 
-    async def dry_run(self, sql: str) -> CostEstimate:
+    async def dry_run(self, sql: str) -> CostEstimate | None:
         client = self._ensure_client()
         job_config = bigquery.QueryJobConfig(dry_run=True, use_legacy_sql=False)
         try:

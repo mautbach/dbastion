@@ -77,12 +77,18 @@ class PostgresAdapter:
             raise AdapterError("Not connected. Call connect() first.")
         return self._conn
 
-    async def dry_run(self, sql: str) -> CostEstimate:
+    async def dry_run(self, sql: str) -> CostEstimate | None:
         conn = self._ensure_conn()
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"EXPLAIN (FORMAT JSON) {sql}")
                 row = await cur.fetchone()
+        except psycopg.Error as e:
+            # SQLSTATE 42601 = syntax_error. Postgres EXPLAIN only supports
+            # SELECT/INSERT/UPDATE/DELETE/MERGE — DDL produces a syntax error.
+            if e.sqlstate == "42601":
+                return None
+            raise AdapterError(f"PostgreSQL EXPLAIN failed: {e}") from e
         except Exception as e:
             raise AdapterError(f"PostgreSQL EXPLAIN failed: {e}") from e
 

@@ -139,4 +139,5 @@ def run_policy(
         diagnostics=diagnostics,
         blocked=blocked,
         tables=tables,
+        classification=stmt_type.value,
     )

@@ -6,6 +6,7 @@ import click
 
 from dbastion.cli.auth import auth
 from dbastion.cli.connect import connect
+from dbastion.cli.exec import exec_cmd
 from dbastion.cli.query import query
 from dbastion.cli.validate import validate
 
@@ -20,3 +21,4 @@ main.add_command(auth)
 main.add_command(connect)
 main.add_command(validate)
 main.add_command(query)
+main.add_command(exec_cmd)

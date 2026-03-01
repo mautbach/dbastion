@@ -34,6 +34,29 @@ def test_validate_json_output() -> None:
     data = json.loads(result.output)
     assert data["blocked"] is False
     assert "effective_sql" in data
+    assert data["classification"] == "read"
+
+
+def test_validate_json_classification_dml() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["validate", "--format", "json", "--allow-write",
+               "DELETE FROM users WHERE id=1"],
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["classification"] == "dml"
+
+
+def test_validate_json_classification_ddl() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["validate", "--format", "json", "--allow-write",
+               "CREATE TABLE test (id INT)"],
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["classification"] == "ddl"
 
 
 def test_validate_write_blocked() -> None:

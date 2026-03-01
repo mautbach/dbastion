@@ -43,7 +43,7 @@ class DuckDBAdapter:
             raise AdapterError("Not connected. Call connect() first.")
         return self._conn
 
-    async def dry_run(self, sql: str) -> CostEstimate:
+    async def dry_run(self, sql: str) -> CostEstimate | None:
         conn = self._ensure_conn()
         try:
             result = conn.execute(f"EXPLAIN {sql}")

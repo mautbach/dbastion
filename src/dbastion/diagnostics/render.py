@@ -7,15 +7,18 @@ from dbastion.diagnostics.types import Applicability, Diagnostic, DiagnosticResu
 
 def render_json(result: DiagnosticResult) -> dict:
     """Render a DiagnosticResult as a JSON-serializable dict."""
-    return {
+    d: dict = {
         "original_sql": result.original_sql,
         "healed_sql": result.healed_sql,
         "effective_sql": result.effective_sql,
         "blocked": result.blocked,
         "tables": result.tables,
         "applied_fixes": result.applied_fixes_summary(),
-        "diagnostics": [_diagnostic_to_dict(d) for d in result.diagnostics],
+        "diagnostics": [_diagnostic_to_dict(diag) for diag in result.diagnostics],
     }
+    if result.classification is not None:
+        d["classification"] = result.classification
+    return d
 
 
 def render_text(result: DiagnosticResult) -> str:

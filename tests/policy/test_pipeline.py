@@ -8,15 +8,18 @@ class TestClassificationBlocking:
     def test_select_allowed(self) -> None:
         result = run_policy("SELECT id FROM users")
         assert not result.blocked
+        assert result.classification == "read"
 
     def test_insert_blocked_by_default(self) -> None:
         result = run_policy("INSERT INTO users (name) VALUES ('test')")
         assert result.blocked
         assert any(d.code == codes.WRITE_BLOCKED for d in result.diagnostics)
+        assert result.classification == "dml"
 
     def test_insert_allowed_with_flag(self) -> None:
         result = run_policy("INSERT INTO users (name) VALUES ('test')", allow_write=True)
         assert not result.blocked
+        assert result.classification == "dml"
 
     def test_update_blocked_by_default(self) -> None:
         result = run_policy("UPDATE users SET name = 'test' WHERE id = 1")
@@ -30,6 +33,7 @@ class TestClassificationBlocking:
         result = run_policy("CREATE TABLE test (id INT)")
         assert result.blocked
         assert any(d.code == codes.DDL_BLOCKED for d in result.diagnostics)
+        assert result.classification == "ddl"
 
     def test_drop_blocked(self) -> None:
         result = run_policy("DROP TABLE users")
