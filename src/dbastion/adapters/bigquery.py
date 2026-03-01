@@ -14,8 +14,6 @@ from dbastion.adapters._base import (
     CostUnit,
     DatabaseType,
     ExecutionResult,
-    IntrospectionLevel,
-    SchemaMetadata,
     TableInfo,
 )
 
@@ -115,42 +113,65 @@ class BigQueryAdapter:
             duration_ms=duration_ms,
         )
 
-    async def introspect(self, level: IntrospectionLevel) -> SchemaMetadata:
+    async def list_schemas(self) -> list[str]:
         client = self._ensure_client()
-        tables: list[TableInfo] = []
-
         try:
-            datasets = list(client.list_datasets())
+            return [ds.dataset_id for ds in client.list_datasets()]
         except Exception as e:
-            raise AdapterError(f"BigQuery introspection failed: {e}") from e
+            raise AdapterError(f"BigQuery list datasets failed: {e}") from e
 
-        for dataset_ref in datasets:
-            dataset_id = dataset_ref.dataset_id
-            for table_ref in client.list_tables(dataset_id):
-                if level == IntrospectionLevel.CATALOG:
-                    tables.append(TableInfo(schema=dataset_id, name=table_ref.table_id))
-                    continue
+    async def list_tables(self, schema: str | None = None) -> list[TableInfo]:
+        client = self._ensure_client()
+        if not schema:
+            raise AdapterError("BigQuery requires a dataset name. Use `schema ls` first.")
+        try:
+            return [
+                TableInfo(schema=schema, name=t.table_id)
+                for t in client.list_tables(schema)
+            ]
+        except Exception as e:
+            raise AdapterError(f"BigQuery list tables failed: {e}") from e
 
-                table = client.get_table(table_ref)
-                columns = [
-                    ColumnInfo(
-                        name=field.name,
-                        data_type=field.field_type,
-                        is_nullable=(field.mode != "REQUIRED"),
-                        comment=field.description,
-                    )
-                    for field in table.schema
-                ]
-                tables.append(
-                    TableInfo(
-                        schema=dataset_id,
-                        name=table_ref.table_id,
-                        row_count_estimate=table.num_rows,
-                        columns=columns,
-                    )
-                )
+    async def describe_table(self, table: str, schema: str | None = None) -> TableInfo:
+        client = self._ensure_client()
+        ref = f"{schema}.{table}" if schema else table
+        try:
+            t = client.get_table(ref)
+        except Exception as e:
+            raise AdapterError(f"BigQuery describe table failed: {e}") from e
 
-        return SchemaMetadata(tables=tables)
+        columns = [
+            ColumnInfo(
+                name=field.name,
+                data_type=field.field_type,
+                is_nullable=(field.mode != "REQUIRED"),
+                comment=field.description,
+            )
+            for field in t.schema
+        ]
+
+        meta: dict[str, object] = {}
+        if t.time_partitioning:
+            tp: dict[str, object] = {"type": t.time_partitioning.type_}
+            if t.time_partitioning.field:
+                tp["field"] = t.time_partitioning.field
+            meta["partitioning"] = tp
+        if t.clustering_fields:
+            meta["clustering"] = list(t.clustering_fields)
+        if t.created is not None:
+            meta["created"] = t.created.isoformat()
+        if t.modified is not None:
+            meta["modified"] = t.modified.isoformat()
+        if t.num_bytes is not None:
+            meta["num_bytes"] = t.num_bytes
+
+        return TableInfo(
+            schema=schema or t.dataset_id,
+            name=t.table_id,
+            row_count_estimate=t.num_rows,
+            columns=columns,
+            metadata=meta,
+        )
 
     def db_type(self) -> DatabaseType:
         return DatabaseType.BIGQUERY

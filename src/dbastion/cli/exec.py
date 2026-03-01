@@ -159,7 +159,10 @@ async def _run_exec(
 @click.option("--limit", type=int, default=1000, help="Auto-LIMIT value (0 to disable).")
 @click.option("--no-limit", is_flag=True, help="Disable auto-LIMIT injection.")
 @click.option("--skip-dry-run", is_flag=True, help="Skip cost estimation, execute directly.")
-@click.option("--max-gb", type=float, default=None, help="Block if scan exceeds N GB (BigQuery).")
+@click.option(
+    "--max-gb", type=float, default=69,
+    help="Block if scan exceeds N GB (default: 69, 0 to disable).",
+)
 @click.option("--max-usd", type=float, default=None, help="Block if cost exceeds $N (BigQuery).")
 @click.option("--max-rows", type=float, default=None, help="Block if rows exceed N.")
 def exec_cmd(
@@ -182,6 +185,9 @@ def exec_cmd(
     """
     cleanup_old_logs()
     effective_limit = None if no_limit else (limit if limit > 0 else None)
+    # --max-gb 0 disables the threshold.
+    if max_gb is not None and max_gb <= 0:
+        max_gb = None
 
     try:
         config = parse_db(db)

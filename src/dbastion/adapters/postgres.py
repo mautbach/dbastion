@@ -15,8 +15,6 @@ from dbastion.adapters._base import (
     CostUnit,
     DatabaseType,
     ExecutionResult,
-    IntrospectionLevel,
-    SchemaMetadata,
     TableInfo,
 )
 
@@ -150,48 +148,73 @@ class PostgresAdapter:
             duration_ms=duration_ms,
         )
 
-    async def introspect(self, level: IntrospectionLevel) -> SchemaMetadata:
-        conn = self._ensure_conn()
-        tables: list[TableInfo] = []
+    _EXCLUDED_SCHEMAS = ("pg_catalog", "information_schema")
 
+    async def list_schemas(self) -> list[str]:
+        conn = self._ensure_conn()
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT table_schema, table_name "
-                    "FROM information_schema.tables "
-                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
-                    "ORDER BY table_schema, table_name"
+                    "SELECT schema_name FROM information_schema.schemata "
+                    "WHERE schema_name != ALL(%s) ORDER BY schema_name",
+                    (list(self._EXCLUDED_SCHEMAS),),
                 )
-                table_rows = await cur.fetchall()
-
-                for schema, table_name in table_rows:
-                    if level == IntrospectionLevel.CATALOG:
-                        tables.append(TableInfo(schema=schema, name=table_name))
-                        continue
-
-                    await cur.execute(
-                        "SELECT column_name, data_type, is_nullable "
-                        "FROM information_schema.columns "
-                        "WHERE table_schema = %s AND table_name = %s "
-                        "ORDER BY ordinal_position",
-                        (schema, table_name),
-                    )
-                    col_rows = await cur.fetchall()
-                    columns = [
-                        ColumnInfo(
-                            name=col_name,
-                            data_type=data_type,
-                            is_nullable=(nullable == "YES"),
-                        )
-                        for col_name, data_type, nullable in col_rows
-                    ]
-                    tables.append(
-                        TableInfo(schema=schema, name=table_name, columns=columns)
-                    )
+                return [row[0] for row in await cur.fetchall()]
         except Exception as e:
-            raise AdapterError(f"PostgreSQL introspection failed: {e}") from e
+            raise AdapterError(f"PostgreSQL list schemas failed: {e}") from e
 
-        return SchemaMetadata(tables=tables)
+    async def list_tables(self, schema: str | None = None) -> list[TableInfo]:
+        conn = self._ensure_conn()
+        try:
+            async with conn.cursor() as cur:
+                if schema:
+                    await cur.execute(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = %s ORDER BY table_name",
+                        (schema,),
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT table_schema, table_name FROM information_schema.tables "
+                        "WHERE table_schema != ALL(%s) ORDER BY table_schema, table_name",
+                        (list(self._EXCLUDED_SCHEMAS),),
+                    )
+                rows = await cur.fetchall()
+        except Exception as e:
+            raise AdapterError(f"PostgreSQL list tables failed: {e}") from e
+
+        if schema:
+            return [TableInfo(schema=schema, name=row[0]) for row in rows]
+        return [TableInfo(schema=row[0], name=row[1]) for row in rows]
+
+    async def describe_table(self, table: str, schema: str | None = None) -> TableInfo:
+        conn = self._ensure_conn()
+        effective_schema = schema or "public"
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT column_name, data_type, is_nullable "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s "
+                    "ORDER BY ordinal_position",
+                    (effective_schema, table),
+                )
+                col_rows = await cur.fetchall()
+        except Exception as e:
+            raise AdapterError(f"PostgreSQL describe table failed: {e}") from e
+
+        if not col_rows:
+            raise AdapterError(f"Table '{effective_schema}.{table}' not found")
+
+        columns = [
+            ColumnInfo(
+                name=col_name,
+                data_type=data_type,
+                is_nullable=(nullable == "YES"),
+            )
+            for col_name, data_type, nullable in col_rows
+        ]
+        return TableInfo(schema=effective_schema, name=table, columns=columns)
 
     def db_type(self) -> DatabaseType:
         return DatabaseType.POSTGRES

@@ -254,6 +254,7 @@ class TestCostThresholdNoEstimate:
         runner = CliRunner()
         result = runner.invoke(main, [
             "query", "SELECT 1 AS x", "--db", "duckdb:", "--format", "json",
+            "--max-gb", "0",
         ])
         assert result.exit_code == 0
         data = json.loads(result.output)

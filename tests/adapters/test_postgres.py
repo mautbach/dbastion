@@ -16,7 +16,6 @@ from dbastion.adapters._base import (  # noqa: E402
     ConnectionConfig,
     CostUnit,
     DatabaseType,
-    IntrospectionLevel,
 )
 from dbastion.adapters.postgres import PostgresAdapter  # noqa: E402
 
@@ -197,42 +196,53 @@ def test_dry_run_nonexistent_table(postgres_adapter):
         asyncio.run(postgres_adapter.dry_run("SELECT * FROM nonexistent_table_xyz"))
 
 
-# -- introspect() --
+# -- list_schemas / list_tables / describe_table --
 
 
-def test_introspect_catalog(postgres_adapter):
-    meta = asyncio.run(postgres_adapter.introspect(IntrospectionLevel.CATALOG))
-    tpch_tables = {t.name for t in meta.tables if t.schema == "tpch"}
-    assert tpch_tables >= {
+def test_list_schemas(postgres_adapter):
+    schemas = asyncio.run(postgres_adapter.list_schemas())
+    assert "tpch" in schemas
+    assert "pg_catalog" not in schemas
+    assert "information_schema" not in schemas
+
+
+def test_list_tables_in_schema(postgres_adapter):
+    tables = asyncio.run(postgres_adapter.list_tables("tpch"))
+    table_names = {t.name for t in tables}
+    assert table_names >= {
         "region", "nation", "part", "supplier",
         "partsupp", "customer", "orders", "lineitem",
     }
+    assert all(t.schema == "tpch" for t in tables)
 
 
-def test_introspect_structure(postgres_adapter):
-    meta = asyncio.run(postgres_adapter.introspect(IntrospectionLevel.STRUCTURE))
-    tpch = {t.name: t for t in meta.tables if t.schema == "tpch"}
-    lineitem = tpch["lineitem"]
-    assert len(lineitem.columns) == 16
-    col_names = [c.name for c in lineitem.columns]
+def test_list_tables_all(postgres_adapter):
+    tables = asyncio.run(postgres_adapter.list_tables())
+    schemas = {t.schema for t in tables}
+    assert "tpch" in schemas
+    assert "pg_catalog" not in schemas
+
+
+def test_describe_table_lineitem(postgres_adapter):
+    info = asyncio.run(postgres_adapter.describe_table("lineitem", schema="tpch"))
+    assert info.name == "lineitem"
+    assert info.schema == "tpch"
+    assert len(info.columns) == 16
+    col_names = [c.name for c in info.columns]
     assert "l_orderkey" in col_names
     assert "l_shipdate" in col_names
 
 
-def test_introspect_column_types(postgres_adapter):
-    meta = asyncio.run(postgres_adapter.introspect(IntrospectionLevel.STRUCTURE))
-    tpch = {t.name: t for t in meta.tables if t.schema == "tpch"}
-    region = tpch["region"]
-    col_map = {c.name: c for c in region.columns}
+def test_describe_table_column_types(postgres_adapter):
+    info = asyncio.run(postgres_adapter.describe_table("region", schema="tpch"))
+    col_map = {c.name: c for c in info.columns}
     assert "integer" in col_map["r_regionkey"].data_type.lower()
     assert "character varying" in col_map["r_name"].data_type.lower()
 
 
-def test_introspect_all_tables_have_columns(postgres_adapter):
-    meta = asyncio.run(postgres_adapter.introspect(IntrospectionLevel.STRUCTURE))
-    tpch_tables = [t for t in meta.tables if t.schema == "tpch"]
-    for table in tpch_tables:
-        assert len(table.columns) > 0, f"{table.name} has no columns"
+def test_describe_table_not_found(postgres_adapter):
+    with pytest.raises(AdapterError, match="not found"):
+        asyncio.run(postgres_adapter.describe_table("nonexistent_xyz", schema="tpch"))
 
 
 # -- Metadata --

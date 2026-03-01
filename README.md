@@ -128,11 +128,13 @@ Both `dbastion` and `dbast` (short alias) work after install.
 ## Commands
 
 ```
-dbastion query <sql>     Reads execute, writes validate only
-dbastion exec <sql>      Execute a validated write
-dbastion validate <sql>  Validate without executing
-dbastion connect         Manage named connections
-dbastion auth            Manage credentials
+dbastion query <sql>          Reads execute, writes validate only
+dbastion exec <sql>           Execute a validated write
+dbastion validate <sql>       Validate without executing
+dbastion schema ls [schema]   List schemas or tables
+dbastion schema show <table>  Show table columns and metadata
+dbastion connect              Manage named connections
+dbastion auth                 Manage credentials
 ```
 
 ## Options
@@ -143,7 +145,7 @@ dbastion auth            Manage credentials
 --limit N            Auto-LIMIT value (default: 1000)
 --no-limit           Disable auto-LIMIT
 --dry-run            Estimate cost only, don't execute
---max-gb N           Block if scan exceeds N GB
+--max-gb N           Block if scan exceeds N GB (default: 69, 0 to disable)
 --max-usd N          Block if cost exceeds $N
 --max-rows N         Block if rows exceed N
 --from-stdin         Read SQL from stdin (query only)

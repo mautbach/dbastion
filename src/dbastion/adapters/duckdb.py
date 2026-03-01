@@ -14,8 +14,6 @@ from dbastion.adapters._base import (
     CostUnit,
     DatabaseType,
     ExecutionResult,
-    IntrospectionLevel,
-    SchemaMetadata,
     TableInfo,
 )
 
@@ -85,47 +83,67 @@ class DuckDBAdapter:
             duration_ms=duration_ms,
         )
 
-    async def introspect(self, level: IntrospectionLevel) -> SchemaMetadata:
-        conn = self._ensure_conn()
-        tables: list[TableInfo] = []
+    _EXCLUDED_SCHEMAS = ("pg_catalog", "information_schema")
 
+    async def list_schemas(self) -> list[str]:
+        conn = self._ensure_conn()
         try:
             result = conn.execute(
-                "SELECT table_schema, table_name "
-                "FROM information_schema.tables "
-                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
-                "ORDER BY table_schema, table_name"
+                "SELECT DISTINCT table_schema FROM information_schema.tables "
+                "WHERE table_schema NOT IN (?, ?) ORDER BY table_schema",
+                list(self._EXCLUDED_SCHEMAS),
             )
-            table_rows = result.fetchall()
-
-            for schema, table_name in table_rows:
-                if level == IntrospectionLevel.CATALOG:
-                    tables.append(TableInfo(schema=schema, name=table_name))
-                    continue
-
-                col_result = conn.execute(
-                    "SELECT column_name, data_type, is_nullable "
-                    "FROM information_schema.columns "
-                    "WHERE table_schema = ? AND table_name = ? "
-                    "ORDER BY ordinal_position",
-                    [schema, table_name],
-                )
-                col_rows = col_result.fetchall()
-                columns = [
-                    ColumnInfo(
-                        name=col_name,
-                        data_type=data_type,
-                        is_nullable=(nullable == "YES"),
-                    )
-                    for col_name, data_type, nullable in col_rows
-                ]
-                tables.append(
-                    TableInfo(schema=schema, name=table_name, columns=columns)
-                )
+            return [row[0] for row in result.fetchall()]
         except Exception as e:
-            raise AdapterError(f"DuckDB introspection failed: {e}") from e
+            raise AdapterError(f"DuckDB list schemas failed: {e}") from e
 
-        return SchemaMetadata(tables=tables)
+    async def list_tables(self, schema: str | None = None) -> list[TableInfo]:
+        conn = self._ensure_conn()
+        try:
+            if schema:
+                result = conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ? ORDER BY table_name",
+                    [schema],
+                )
+                return [TableInfo(schema=schema, name=row[0]) for row in result.fetchall()]
+            else:
+                result = conn.execute(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_schema NOT IN (?, ?) ORDER BY table_schema, table_name",
+                    list(self._EXCLUDED_SCHEMAS),
+                )
+                return [TableInfo(schema=row[0], name=row[1]) for row in result.fetchall()]
+        except Exception as e:
+            raise AdapterError(f"DuckDB list tables failed: {e}") from e
+
+    async def describe_table(self, table: str, schema: str | None = None) -> TableInfo:
+        conn = self._ensure_conn()
+        effective_schema = schema or "main"
+        try:
+            result = conn.execute(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ? "
+                "ORDER BY ordinal_position",
+                [effective_schema, table],
+            )
+            col_rows = result.fetchall()
+        except Exception as e:
+            raise AdapterError(f"DuckDB describe table failed: {e}") from e
+
+        if not col_rows:
+            raise AdapterError(f"Table '{effective_schema}.{table}' not found")
+
+        columns = [
+            ColumnInfo(
+                name=col_name,
+                data_type=data_type,
+                is_nullable=(nullable == "YES"),
+            )
+            for col_name, data_type, nullable in col_rows
+        ]
+        return TableInfo(schema=effective_schema, name=table, columns=columns)
 
     def db_type(self) -> DatabaseType:
         return DatabaseType.DUCKDB

@@ -8,6 +8,7 @@ from dbastion.cli.auth import auth
 from dbastion.cli.connect import connect
 from dbastion.cli.exec import exec_cmd
 from dbastion.cli.query import query
+from dbastion.cli.schema import schema
 from dbastion.cli.validate import validate
 
 
@@ -19,6 +20,7 @@ def main() -> None:
 
 main.add_command(auth)
 main.add_command(connect)
+main.add_command(schema)
 main.add_command(validate)
 main.add_command(query)
 main.add_command(exec_cmd)

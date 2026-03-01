@@ -10,8 +10,6 @@ from dbastion.adapters._base import (
     DatabaseType,
     ExecutionResult,
     ForeignKeyRef,
-    IntrospectionLevel,
-    SchemaMetadata,
     TableInfo,
 )
 
@@ -25,7 +23,5 @@ __all__ = [
     "DatabaseType",
     "ExecutionResult",
     "ForeignKeyRef",
-    "IntrospectionLevel",
-    "SchemaMetadata",
     "TableInfo",
 ]

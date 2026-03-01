@@ -6,6 +6,9 @@ import enum
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+# JSON-safe value type for adapter metadata.
+JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+
 
 class DatabaseType(enum.Enum):
     POSTGRES = "postgres"
@@ -55,12 +58,6 @@ class AdapterError(Exception):
     """Raised by adapters for connection/execution failures."""
 
 
-class IntrospectionLevel(enum.Enum):
-    CATALOG = "catalog"
-    STRUCTURE = "structure"
-    FULL = "full"
-
-
 @dataclass
 class ColumnInfo:
     name: str
@@ -83,11 +80,7 @@ class TableInfo:
     name: str
     row_count_estimate: int | None = None
     columns: list[ColumnInfo] = field(default_factory=list)
-
-
-@dataclass
-class SchemaMetadata:
-    tables: list[TableInfo] = field(default_factory=list)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -98,7 +91,9 @@ class DatabaseAdapter(Protocol):
     async def execute(
         self, sql: str, *, labels: dict[str, str] | None = None
     ) -> ExecutionResult: ...
-    async def introspect(self, level: IntrospectionLevel) -> SchemaMetadata: ...
+    async def list_schemas(self) -> list[str]: ...
+    async def list_tables(self, schema: str | None = None) -> list[TableInfo]: ...
+    async def describe_table(self, table: str, schema: str | None = None) -> TableInfo: ...
     def db_type(self) -> DatabaseType: ...
     def dialect(self) -> str: ...
     def dangerous_functions(self) -> frozenset[str]:
