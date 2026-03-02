@@ -51,15 +51,43 @@ def get_connection(name: str) -> ConnectionConfig | None:
     entry = data[name]
     db_type_str = entry.get("type")
     if db_type_str is None:
-        return None
+        raise ValueError(
+            f"Connection '{name}' is missing required 'type' field"
+        )
 
     try:
         db_type = DatabaseType(db_type_str)
-    except ValueError:
-        return None
+    except ValueError as e:
+        valid = ", ".join(t.value for t in DatabaseType)
+        raise ValueError(
+            f"Connection '{name}' has invalid type '{db_type_str}'. "
+            f"Valid types: {valid}"
+        ) from e
 
-    params = {k: str(v) for k, v in entry.items() if k != "type"}
-    return ConnectionConfig(name=name, db_type=db_type, params=params)
+    # Separate cost thresholds from adapter params.
+    threshold_keys = {"max_gb", "max_usd", "max_rows"}
+    params = {k: str(v) for k, v in entry.items() if k != "type" and k not in threshold_keys}
+
+    def _parse_threshold(key: str) -> float | None:
+        val = entry.get(key)
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Invalid value for '{key}' in connection '{name}': "
+                f"{val!r} (expected a number)"
+            ) from e
+
+    return ConnectionConfig(
+        name=name,
+        db_type=db_type,
+        params=params,
+        max_gb=_parse_threshold("max_gb"),
+        max_usd=_parse_threshold("max_usd"),
+        max_rows=_parse_threshold("max_rows"),
+    )
 
 
 def save_connection(name: str, db_type: str, params: dict[str, str]) -> Path:

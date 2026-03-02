@@ -55,13 +55,19 @@ def connect_list() -> None:
         click.echo("Add one: dbastion connect add <name> <type> <param>=<val>")
         return
 
+    threshold_keys = {"max_gb", "max_usd", "max_rows"}
     for name, entry in connections.items():
         db_type = entry.get("type", "?")
-        params = {k: v for k, v in entry.items() if k != "type"}
+        params = {k: v for k, v in entry.items() if k != "type" and k not in threshold_keys}
+        thresholds = {k: v for k, v in entry.items() if k in threshold_keys}
         param_str = ", ".join(
             f"{k}={_mask_secrets(str(v))}" for k, v in params.items()
         )
-        click.echo(f"  {name} ({db_type}): {param_str}")
+        line = f"  {name} ({db_type}): {param_str}"
+        if thresholds:
+            thresh_str = ", ".join(f"{k}={v}" for k, v in thresholds.items())
+            line += f"  [{thresh_str}]"
+        click.echo(line)
 
 
 @connect.command("remove")

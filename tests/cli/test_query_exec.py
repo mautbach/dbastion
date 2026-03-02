@@ -203,8 +203,27 @@ class TestDDLDryRun:
 class TestCostThresholdNoEstimate:
     """When adapter can't estimate cost and thresholds are set, deny."""
 
-    def test_query_thresholds_without_estimate_denied(self, monkeypatch) -> None:
-        """query with --max-gb should deny when dry-run returns None."""
+    def test_query_explicit_max_gb_without_estimate_denied(self, monkeypatch) -> None:
+        """Explicit --max-gb is strict: deny when dry-run can't estimate."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1 AS x", "--db", "duckdb:",
+            "--format", "json", "--max-gb", "10",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "cannot estimate" in data.get("cost_error", "")
+
+    def test_query_explicit_threshold_without_estimate_denied(self, monkeypatch) -> None:
+        """--max-usd/--max-rows are explicit: deny when dry-run returns None."""
         from dbastion.adapters import duckdb as duckdb_adapter
 
         async def _dry_run_none(self, sql):
@@ -215,7 +234,7 @@ class TestCostThresholdNoEstimate:
         runner = CliRunner()
         result = runner.invoke(main, [
             "query", "SELECT 1", "--db", "duckdb:",
-            "--format", "json", "--max-gb", "10",
+            "--format", "json", "--max-usd", "1",
         ])
         assert result.exit_code == 1
         data = json.loads(result.output)
@@ -242,8 +261,8 @@ class TestCostThresholdNoEstimate:
         assert data["decision"] == "deny"
         assert "cannot estimate" in data.get("cost_error", "")
 
-    def test_query_no_thresholds_without_estimate_proceeds(self, monkeypatch) -> None:
-        """Without thresholds, None estimate is fine — proceed normally."""
+    def test_query_default_thresholds_without_estimate_proceeds(self, monkeypatch) -> None:
+        """Default max-gb is best-effort, so None estimate proceeds normally."""
         from dbastion.adapters import duckdb as duckdb_adapter
 
         async def _dry_run_none(self, sql):
@@ -254,11 +273,301 @@ class TestCostThresholdNoEstimate:
         runner = CliRunner()
         result = runner.invoke(main, [
             "query", "SELECT 1 AS x", "--db", "duckdb:", "--format", "json",
-            "--max-gb", "0",
         ])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["decision"] == "allow"
+
+
+class TestThresholdEnvVars:
+    """Environment variables for cost thresholds."""
+
+    def test_max_gb_from_env(self, monkeypatch) -> None:
+        """DBASTION_MAX_GB sets --max-gb."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+        from dbastion.adapters._base import CostEstimate, CostUnit
+
+        async def _dry_run_big(self, sql):
+            return CostEstimate(
+                raw_value=100e9, unit=CostUnit.BYTES,
+                estimated_gb=100, summary="100 GB",
+            )
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_big)
+        monkeypatch.setenv("DBASTION_MAX_GB", "50")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "duckdb:", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "100.0 GB" in data.get("cost_error", "")
+
+    def test_max_gb_cli_overrides_env(self, monkeypatch) -> None:
+        """CLI --max-gb takes precedence over DBASTION_MAX_GB."""
+        monkeypatch.setenv("DBASTION_MAX_GB", "1")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1 AS x", "--db", "duckdb:",
+            "--format", "json", "--max-gb", "0",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["decision"] == "allow"
+
+    def test_max_gb_env_without_estimate_denied(self, monkeypatch) -> None:
+        """DBASTION_MAX_GB is explicit: deny when dry-run can't estimate."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+        monkeypatch.setenv("DBASTION_MAX_GB", "50")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "duckdb:", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "cannot estimate" in data.get("cost_error", "")
+
+    def test_max_usd_zero_disables(self, monkeypatch) -> None:
+        """--max-usd 0 disables the threshold (same as --max-gb 0)."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1 AS x", "--db", "duckdb:",
+            "--format", "json", "--max-usd", "0", "--max-gb", "0",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["decision"] == "allow"
+
+    def test_max_rows_zero_disables(self, monkeypatch) -> None:
+        """--max-rows 0 disables the threshold."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1 AS x", "--db", "duckdb:",
+            "--format", "json", "--max-rows", "0", "--max-gb", "0",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["decision"] == "allow"
+
+    def test_max_usd_from_env(self, monkeypatch) -> None:
+        """DBASTION_MAX_USD sets --max-usd."""
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+        monkeypatch.setenv("DBASTION_MAX_USD", "10")
+        # Also disable max-gb default so it doesn't interfere
+        monkeypatch.setenv("DBASTION_MAX_GB", "0")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "duckdb:", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "cannot estimate" in data.get("cost_error", "")
+
+
+class TestThresholdConnectionConfig:
+    """Per-connection cost thresholds from connections.toml."""
+
+    def test_connection_max_gb(self, monkeypatch, tmp_path) -> None:
+        """max_gb in connection config is used as threshold."""
+        from dbastion import connections
+        from dbastion.adapters import duckdb as duckdb_adapter
+        from dbastion.adapters._base import CostEstimate, CostUnit
+
+        async def _dry_run_big(self, sql):
+            return CostEstimate(
+                raw_value=100e9, unit=CostUnit.BYTES,
+                estimated_gb=100, summary="100 GB",
+            )
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_big)
+
+        # Create a temp connections file with max_gb
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "50"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+
+    def test_connection_max_gb_without_estimate_denied(self, monkeypatch, tmp_path) -> None:
+        """max_gb in connection config is explicit: deny when can't estimate."""
+        from dbastion import connections
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "50"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "cannot estimate" in data.get("cost_error", "")
+
+    def test_cli_overrides_connection(self, monkeypatch, tmp_path) -> None:
+        """CLI --max-gb overrides connection config."""
+        from dbastion import connections
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "1"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1 AS x", "--db", "testconn",
+            "--format", "json", "--max-gb", "0",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["decision"] == "allow"
+
+    def test_connection_max_usd(self, monkeypatch, tmp_path) -> None:
+        """max_usd in connection config triggers deny when can't estimate."""
+        from dbastion import connections
+        from dbastion.adapters import duckdb as duckdb_adapter
+
+        async def _dry_run_none(self, sql):
+            return None
+
+        monkeypatch.setattr(duckdb_adapter.DuckDBAdapter, "dry_run", _dry_run_none)
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "0"\nmax_usd = "10"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["decision"] == "deny"
+        assert "cannot estimate" in data.get("cost_error", "")
+
+    def test_invalid_type_fails(self, monkeypatch, tmp_path) -> None:
+        """Invalid db type in connections.toml produces a clear error."""
+        from dbastion import connections
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "mongodb"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        assert "invalid type" in result.output
+        assert "mongodb" in result.output
+
+    def test_missing_type_fails(self, monkeypatch, tmp_path) -> None:
+        """Missing type field in connections.toml produces a clear error."""
+        from dbastion import connections
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ndsn = "postgresql://localhost/db"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        assert "missing" in result.output.lower()
+        assert "type" in result.output
+
+    def test_malformed_threshold_fails(self, monkeypatch, tmp_path) -> None:
+        """Invalid threshold values in connections.toml produce a clear error."""
+        from dbastion import connections
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "not_a_number"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "query", "SELECT 1", "--db", "testconn", "--format", "json",
+        ])
+        assert result.exit_code == 1
+        assert "Invalid value" in result.output
+        assert "max_gb" in result.output
+
+    def test_connection_thresholds_not_in_adapter_params(self, monkeypatch, tmp_path) -> None:
+        """max_gb/max_usd/max_rows should not leak into adapter params."""
+        from dbastion import connections
+
+        toml_file = tmp_path / "connections.toml"
+        toml_file.write_text(
+            '[testconn]\ntype = "duckdb"\nmax_gb = "50"\nmax_usd = "10"\nmax_rows = "1000"\n'
+        )
+        monkeypatch.setattr(connections, "_CONNECTIONS_FILE", toml_file)
+
+        config = connections.get_connection("testconn")
+        assert config is not None
+        assert "max_gb" not in config.params
+        assert "max_usd" not in config.params
+        assert "max_rows" not in config.params
+        assert config.max_gb == 50.0
+        assert config.max_usd == 10.0
+        assert config.max_rows == 1000.0
 
 
 class TestFromStdin:

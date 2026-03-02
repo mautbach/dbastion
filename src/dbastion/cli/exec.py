@@ -16,7 +16,7 @@ from dbastion.adapters._base import AdapterError, ConnectionConfig
 from dbastion.adapters._registry import get_adapter
 from dbastion.adapters.cost import check_cost_threshold
 from dbastion.cli._output import format_result
-from dbastion.cli._shared import AUTO_LABELS, emit_output, parse_db
+from dbastion.cli._shared import AUTO_LABELS, emit_output, parse_db, resolve_thresholds
 from dbastion.diagnostics import Diagnostic, codes
 from dbastion.policy import run_policy
 from dbastion.querylog import cleanup_old_logs, log_query
@@ -32,6 +32,7 @@ async def _run_exec(
     max_gb: float | None,
     max_usd: float | None,
     max_rows: float | None,
+    has_explicit_thresholds: bool,
     output_format: str,
 ) -> int:
     """Run the write pipeline: policy → dry-run → execute. Returns exit code."""
@@ -75,8 +76,6 @@ async def _run_exec(
     adapter = adapter_cls()
     await adapter.connect(config)
 
-    has_cost_thresholds = max_gb is not None or max_usd is not None or max_rows is not None
-
     try:
         # Step 3: Dry-run for cost estimation
         # Adapters return None when EXPLAIN is unsupported (e.g. DDL on Postgres).
@@ -88,7 +87,7 @@ async def _run_exec(
                 cost_diag = check_cost_threshold(
                     estimate, max_gb=max_gb, max_usd=max_usd, max_rows=max_rows,
                 )
-            elif has_cost_thresholds:
+            elif has_explicit_thresholds:
                 cost_diag = Diagnostic.error(
                     codes.COST_OVER_THRESHOLD,
                     "cost thresholds requested but database cannot estimate "
@@ -160,11 +159,20 @@ async def _run_exec(
 @click.option("--no-limit", is_flag=True, help="Disable auto-LIMIT injection.")
 @click.option("--skip-dry-run", is_flag=True, help="Skip cost estimation, execute directly.")
 @click.option(
-    "--max-gb", type=float, default=69,
+    "--max-gb", type=float, default=None,
+    envvar="DBASTION_MAX_GB",
     help="Block if scan exceeds N GB (default: 69, 0 to disable).",
 )
-@click.option("--max-usd", type=float, default=None, help="Block if cost exceeds $N (BigQuery).")
-@click.option("--max-rows", type=float, default=None, help="Block if rows exceed N.")
+@click.option(
+    "--max-usd", type=float, default=None,
+    envvar="DBASTION_MAX_USD",
+    help="Block if cost exceeds $N (BigQuery).",
+)
+@click.option(
+    "--max-rows", type=float, default=None,
+    envvar="DBASTION_MAX_ROWS",
+    help="Block if rows exceed N.",
+)
 def exec_cmd(
     sql: str,
     db: str,
@@ -185,15 +193,17 @@ def exec_cmd(
     """
     cleanup_old_logs()
     effective_limit = None if no_limit else (limit if limit > 0 else None)
-    # --max-gb 0 disables the threshold.
-    if max_gb is not None and max_gb <= 0:
-        max_gb = None
 
     try:
         config = parse_db(db)
     except click.BadParameter as e:
         click.echo(f"error: {e.format_message()}", err=True)
         raise SystemExit(1) from e
+
+    # Merge: CLI flag > env var > connection config > default.
+    max_gb, max_usd, max_rows, has_explicit = resolve_thresholds(
+        config, max_gb=max_gb, max_usd=max_usd, max_rows=max_rows,
+    )
 
     try:
         # Use adapter's dialect if none specified.
@@ -211,6 +221,7 @@ def exec_cmd(
                 max_gb=max_gb,
                 max_usd=max_usd,
                 max_rows=max_rows,
+                has_explicit_thresholds=has_explicit,
                 output_format=output_format,
             )
         )

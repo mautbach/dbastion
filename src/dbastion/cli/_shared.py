@@ -13,6 +13,50 @@ from dbastion.connections import get_connection
 
 AUTO_LABELS = {"tool": "dbastion"}
 
+# Default cost threshold (GB).  Overridden by env → connection → CLI.
+_DEFAULT_MAX_GB = 69.0
+
+
+def resolve_thresholds(
+    config: ConnectionConfig,
+    *,
+    max_gb: float | None,
+    max_usd: float | None,
+    max_rows: float | None,
+) -> tuple[float | None, float | None, float | None, bool]:
+    """Merge CLI flags with connection-level thresholds.
+
+    Precedence: CLI flag > env var (handled by Click) > connection config > default.
+    Returns (max_gb, max_usd, max_rows, has_explicit) where has_explicit is True
+    when any threshold was explicitly set (CLI/env/connection), not just defaulted.
+    """
+    # Track which thresholds were explicitly set (CLI/env or connection config).
+    explicit_gb = max_gb is not None or config.max_gb is not None
+    explicit_usd = max_usd is not None or config.max_usd is not None
+    explicit_rows = max_rows is not None or config.max_rows is not None
+
+    # CLI/env already resolved by Click — if still None, try connection config.
+    if max_gb is None:
+        max_gb = config.max_gb if config.max_gb is not None else _DEFAULT_MAX_GB
+    if max_usd is None:
+        max_usd = config.max_usd
+    if max_rows is None:
+        max_rows = config.max_rows
+
+    # Setting any threshold to 0 (or negative) disables it.
+    if max_gb is not None and max_gb <= 0:
+        max_gb = None
+        explicit_gb = False
+    if max_usd is not None and max_usd <= 0:
+        max_usd = None
+        explicit_usd = False
+    if max_rows is not None and max_rows <= 0:
+        max_rows = None
+        explicit_rows = False
+
+    has_explicit = explicit_gb or explicit_usd or explicit_rows
+    return max_gb, max_usd, max_rows, has_explicit
+
 
 def resolve_sql_stdin(sql: str | None, from_stdin: bool) -> str:
     """Resolve SQL from positional argument or stdin. Exactly one source required."""
@@ -33,7 +77,10 @@ def resolve_sql_stdin(sql: str | None, from_stdin: bool) -> str:
 def parse_db(value: str) -> ConnectionConfig:
     """Resolve --db value: try named connection first, fall back to 'type:key=val' format."""
     # Named connection from ~/.dbastion/connections.toml
-    config = get_connection(value)
+    try:
+        config = get_connection(value)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="'--db'") from e
     if config is not None:
         return config
 

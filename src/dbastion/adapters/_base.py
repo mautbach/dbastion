@@ -27,6 +27,10 @@ class ConnectionConfig:
     name: str
     db_type: DatabaseType
     params: dict[str, str] = field(default_factory=dict)
+    # Per-connection cost thresholds (override defaults).
+    max_gb: float | None = None
+    max_usd: float | None = None
+    max_rows: float | None = None
 
 
 @dataclass
