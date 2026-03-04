@@ -20,5 +20,26 @@ services:
       timeout: 5s
       retries: 10
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: dbastion-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: dbastion
+      CLICKHOUSE_PASSWORD: dbastion_test
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - chdata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' --user dbastion --password dbastion_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:
+  chdata:

@@ -14,6 +14,7 @@ class DatabaseType(enum.Enum):
     POSTGRES = "postgres"
     BIGQUERY = "bigquery"
     DUCKDB = "duckdb"
+    CLICKHOUSE = "clickhouse"
 
 
 class CostUnit(enum.Enum):

@@ -10,12 +10,14 @@ _ADAPTER_MAP: dict[DatabaseType, tuple[str, str]] = {
     DatabaseType.BIGQUERY: ("dbastion.adapters.bigquery", "BigQueryAdapter"),
     DatabaseType.POSTGRES: ("dbastion.adapters.postgres", "PostgresAdapter"),
     DatabaseType.DUCKDB: ("dbastion.adapters.duckdb", "DuckDBAdapter"),
+    DatabaseType.CLICKHOUSE: ("dbastion.adapters.clickhouse", "ClickHouseAdapter"),
 }
 
 _EXTRAS: dict[DatabaseType, str] = {
     DatabaseType.BIGQUERY: "bigquery",
     DatabaseType.POSTGRES: "postgres",
     DatabaseType.DUCKDB: "duckdb",
+    DatabaseType.CLICKHOUSE: "clickhouse",
 }
 
 
