@@ -11,6 +11,7 @@ _ADAPTER_MAP: dict[DatabaseType, tuple[str, str]] = {
     DatabaseType.POSTGRES: ("dbastion.adapters.postgres", "PostgresAdapter"),
     DatabaseType.DUCKDB: ("dbastion.adapters.duckdb", "DuckDBAdapter"),
     DatabaseType.CLICKHOUSE: ("dbastion.adapters.clickhouse", "ClickHouseAdapter"),
+    DatabaseType.SNOWFLAKE: ("dbastion.adapters.snowflake", "SnowflakeAdapter"),
 }
 
 _EXTRAS: dict[DatabaseType, str] = {
@@ -18,6 +19,7 @@ _EXTRAS: dict[DatabaseType, str] = {
     DatabaseType.POSTGRES: "postgres",
     DatabaseType.DUCKDB: "duckdb",
     DatabaseType.CLICKHOUSE: "clickhouse",
+    DatabaseType.SNOWFLAKE: "snowflake",
 }
 
 

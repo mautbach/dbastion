@@ -32,6 +32,6 @@ def inject_limit(
     modified = statement.limit(limit)
     diag = (
         Diagnostic.info(codes.LIMIT_INJECTED, f"LIMIT {limit} added to unbounded SELECT")
-        .note("override with --no-limit or --limit N")
+        .note("override with --limit N (0 to disable)")
     )
     return modified, diag

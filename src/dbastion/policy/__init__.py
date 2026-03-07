@@ -98,12 +98,12 @@ def run_policy(
     elif stmt_type == StatementType.DML and not allow_write:
         diagnostics.append(
             Diagnostic.error(codes.WRITE_BLOCKED, "write operation blocked")
-            .note("pass --allow-write to enable DML operations")
+            .note("use `dbastion query` and pipe to `dbastion approve` for DML")
         )
     elif stmt_type == StatementType.DDL and not allow_write:
         diagnostics.append(
             Diagnostic.error(codes.DDL_BLOCKED, "DDL operation blocked")
-            .note("pass --allow-write to enable DDL operations")
+            .note("use `dbastion query` and pipe to `dbastion approve` for DDL")
         )
 
     # Step 5: Safety checks

@@ -8,8 +8,9 @@ import pytest
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "postgres: requires running PostgreSQL container")
-    config.addinivalue_line("markers", "clickhouse: requires running ClickHouse container")
+    config.addinivalue_line("markers", "postgres: requires PostgreSQL connection")
+    config.addinivalue_line("markers", "clickhouse: requires ClickHouse connection")
+    config.addinivalue_line("markers", "snowflake: requires Snowflake connection")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -26,3 +27,11 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "clickhouse" in item.keywords:
                 item.add_marker(skip_ch)
+
+    if not os.environ.get("DBASTION_TEST_SNOWFLAKE"):
+        skip_sf = pytest.mark.skip(
+            reason="Snowflake not available (set DBASTION_TEST_SNOWFLAKE=1)",
+        )
+        for item in items:
+            if "snowflake" in item.keywords:
+                item.add_marker(skip_sf)

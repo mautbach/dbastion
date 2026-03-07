@@ -145,6 +145,9 @@ class DuckDBAdapter:
         ]
         return TableInfo(schema=effective_schema, name=table, columns=columns)
 
+    def supports_dry_run_for(self, classification: str) -> bool:
+        return True
+
     def db_type(self) -> DatabaseType:
         return DatabaseType.DUCKDB
 

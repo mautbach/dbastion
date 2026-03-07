@@ -23,7 +23,8 @@ postgres = ["psycopg[binary]>=3.1"]
 bigquery = ["google-cloud-bigquery>=3.20", "google-auth-oauthlib>=1.0"]
 duckdb = ["duckdb>=1.0"]
 clickhouse = ["clickhouse-connect>=0.7"]
-all = ["dbastion[postgres]", "dbastion[bigquery]", "dbastion[duckdb]", "dbastion[clickhouse]"]
+snowflake = ["snowflake-connector-python>=3.6"]
+all = ["dbastion[postgres]", "dbastion[bigquery]", "dbastion[duckdb]", "dbastion[clickhouse]", "dbastion[snowflake]"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9", "dbastion[duckdb]", "dbastion[postgres]", "dbastion[clickhouse]"]
 
 [project.scripts]
@@ -48,6 +49,7 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "postgres: requires running PostgreSQL container",
-    "clickhouse: requires running ClickHouse container",
+    "postgres: requires PostgreSQL connection",
+    "clickhouse: requires ClickHouse connection",
+    "snowflake: requires Snowflake connection",
 ]

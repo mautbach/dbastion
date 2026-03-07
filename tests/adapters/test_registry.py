@@ -40,6 +40,16 @@ def test_get_clickhouse_adapter():
         assert "dbastion[clickhouse]" in str(e)
 
 
+def test_get_snowflake_adapter():
+    """Snowflake adapter class can be loaded."""
+    try:
+        cls = get_adapter(DatabaseType.SNOWFLAKE)
+        assert cls.__name__ == "SnowflakeAdapter"
+    except AdapterError as e:
+        assert "Missing driver" in str(e)
+        assert "dbastion[snowflake]" in str(e)
+
+
 def test_missing_driver_has_install_hint():
     """When a driver import fails, the error includes pip install instructions."""
     # We can't easily force an ImportError for installed packages,

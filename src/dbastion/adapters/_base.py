@@ -15,6 +15,7 @@ class DatabaseType(enum.Enum):
     BIGQUERY = "bigquery"
     DUCKDB = "duckdb"
     CLICKHOUSE = "clickhouse"
+    SNOWFLAKE = "snowflake"
 
 
 class CostUnit(enum.Enum):
@@ -101,6 +102,15 @@ class DatabaseAdapter(Protocol):
     async def describe_table(self, table: str, schema: str | None = None) -> TableInfo: ...
     def db_type(self) -> DatabaseType: ...
     def dialect(self) -> str: ...
+    def supports_dry_run_for(self, classification: str) -> bool:
+        """Whether this adapter's dry_run() supports the given statement classification.
+
+        Returns False when the backend's EXPLAIN cannot handle a statement type
+        (e.g. PostgreSQL cannot EXPLAIN DDL). The caller should skip dry_run()
+        entirely rather than catching errors.
+        """
+        return True
+
     def dangerous_functions(self) -> frozenset[str]:
         """Functions that can cause damage even inside a SELECT.
 

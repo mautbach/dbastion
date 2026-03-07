@@ -15,6 +15,10 @@ POSTGRES_DSN = os.environ.get(
 CLICKHOUSE_HOST = os.environ.get("DBASTION_CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = os.environ.get("DBASTION_CLICKHOUSE_PORT", "8123")
 
+SNOWFLAKE_ACCOUNT = os.environ.get("DBASTION_SNOWFLAKE_ACCOUNT", "")
+SNOWFLAKE_USER = os.environ.get("DBASTION_SNOWFLAKE_USER", "")
+SNOWFLAKE_PASSWORD = os.environ.get("DBASTION_SNOWFLAKE_PASSWORD", "")
+
 
 @pytest.fixture(scope="session")
 def pg_dsn():
@@ -32,6 +36,39 @@ def postgres_adapter(pg_dsn):
         name="tpch-test",
         db_type=DatabaseType.POSTGRES,
         params={"dsn": pg_dsn},
+    )
+    asyncio.run(adapter.connect(config))
+    yield adapter
+    asyncio.run(adapter.close())
+
+
+@pytest.fixture(scope="session")
+def sf_account():
+    return SNOWFLAKE_ACCOUNT
+
+
+@pytest.fixture(scope="session")
+def sf_user():
+    return SNOWFLAKE_USER
+
+
+@pytest.fixture
+def snowflake_adapter(sf_account, sf_user):
+    """Connected SnowflakeAdapter, tears down after each test."""
+    from dbastion.adapters._base import ConnectionConfig, DatabaseType
+    from dbastion.adapters.snowflake import SnowflakeAdapter
+
+    adapter = SnowflakeAdapter()
+    config = ConnectionConfig(
+        name="sf-test",
+        db_type=DatabaseType.SNOWFLAKE,
+        params={
+            "account": sf_account,
+            "user": sf_user,
+            "password": SNOWFLAKE_PASSWORD,
+            "warehouse": os.environ.get("DBASTION_SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+            "database": os.environ.get("DBASTION_SNOWFLAKE_DATABASE", ""),
+        },
     )
     asyncio.run(adapter.connect(config))
     yield adapter

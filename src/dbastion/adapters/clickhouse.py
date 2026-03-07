@@ -185,6 +185,14 @@ class ClickHouseAdapter:
             summary=" | ".join(summary_parts),
         )
 
+    # Columns returned by ClickHouse for mutations (DELETE/ALTER) via query().
+    # These are internal progress metadata, not user-facing results.
+    _PROGRESS_COLUMNS = frozenset({
+        "read_rows", "read_bytes", "written_rows", "written_bytes",
+        "total_rows_to_read", "result_rows", "result_bytes",
+        "elapsed_ns", "query_id",
+    })
+
     async def execute(
         self, sql: str, *, labels: dict[str, str] | None = None,
     ) -> ExecutionResult:
@@ -203,6 +211,13 @@ class ClickHouseAdapter:
         except Exception as e:
             raise AdapterError(f"ClickHouse execution failed: {e}") from e
         duration_ms = (time.monotonic() - t0) * 1000
+
+        # ClickHouse returns internal progress metadata for mutations
+        # (DELETE, ALTER, etc.) — not meaningful for the user.
+        if set(columns) <= self._PROGRESS_COLUMNS:
+            return ExecutionResult(
+                columns=[], rows=[], row_count=0, duration_ms=duration_ms,
+            )
 
         rows = [dict(zip(columns, row, strict=True)) for row in rows_raw]
 
@@ -313,6 +328,9 @@ class ClickHouseAdapter:
             columns=columns,
             metadata=metadata,
         )
+
+    def supports_dry_run_for(self, classification: str) -> bool:
+        return True
 
     def db_type(self) -> DatabaseType:
         return DatabaseType.CLICKHOUSE

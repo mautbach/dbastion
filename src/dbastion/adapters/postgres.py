@@ -82,10 +82,6 @@ class PostgresAdapter:
                 await cur.execute(f"EXPLAIN (FORMAT JSON) {sql}")
                 row = await cur.fetchone()
         except psycopg.Error as e:
-            # SQLSTATE 42601 = syntax_error. Postgres EXPLAIN only supports
-            # SELECT/INSERT/UPDATE/DELETE/MERGE — DDL produces a syntax error.
-            if e.sqlstate == "42601":
-                return None
             raise AdapterError(f"PostgreSQL EXPLAIN failed: {e}") from e
         except Exception as e:
             raise AdapterError(f"PostgreSQL EXPLAIN failed: {e}") from e
@@ -218,6 +214,10 @@ class PostgresAdapter:
 
     def db_type(self) -> DatabaseType:
         return DatabaseType.POSTGRES
+
+    def supports_dry_run_for(self, classification: str) -> bool:
+        # PostgreSQL EXPLAIN doesn't support DDL statements (42601).
+        return classification != "ddl"
 
     def dialect(self) -> str:
         return "postgres"

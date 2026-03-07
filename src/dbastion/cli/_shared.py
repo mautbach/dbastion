@@ -1,4 +1,4 @@
-"""Shared helpers for query and exec commands."""
+"""Shared helpers for query and approve commands."""
 
 from __future__ import annotations
 
@@ -13,49 +13,23 @@ from dbastion.connections import get_connection
 
 AUTO_LABELS = {"tool": "dbastion"}
 
-# Default cost threshold (GB).  Overridden by env → connection → CLI.
-_DEFAULT_MAX_GB = 69.0
+# Default cost threshold (GB).  Overridden by connection config.
+_DEFAULT_MAX_GB = 100.0
 
 
 def resolve_thresholds(
     config: ConnectionConfig,
-    *,
-    max_gb: float | None,
-    max_usd: float | None,
-    max_rows: float | None,
-) -> tuple[float | None, float | None, float | None, bool]:
-    """Merge CLI flags with connection-level thresholds.
+) -> tuple[float | None, float | None, float | None]:
+    """Read cost thresholds from connection config, falling back to defaults.
 
-    Precedence: CLI flag > env var (handled by Click) > connection config > default.
-    Returns (max_gb, max_usd, max_rows, has_explicit) where has_explicit is True
-    when any threshold was explicitly set (CLI/env/connection), not just defaulted.
+    Returns (max_gb, max_usd, max_rows). Thresholds can be raised but not
+    disabled — values <= 0 are ignored.
     """
-    # Track which thresholds were explicitly set (CLI/env or connection config).
-    explicit_gb = max_gb is not None or config.max_gb is not None
-    explicit_usd = max_usd is not None or config.max_usd is not None
-    explicit_rows = max_rows is not None or config.max_rows is not None
+    max_gb = config.max_gb if config.max_gb is not None and config.max_gb > 0 else _DEFAULT_MAX_GB
+    max_usd = config.max_usd if config.max_usd is not None and config.max_usd > 0 else None
+    max_rows = config.max_rows if config.max_rows is not None and config.max_rows > 0 else None
 
-    # CLI/env already resolved by Click — if still None, try connection config.
-    if max_gb is None:
-        max_gb = config.max_gb if config.max_gb is not None else _DEFAULT_MAX_GB
-    if max_usd is None:
-        max_usd = config.max_usd
-    if max_rows is None:
-        max_rows = config.max_rows
-
-    # Setting any threshold to 0 (or negative) disables it.
-    if max_gb is not None and max_gb <= 0:
-        max_gb = None
-        explicit_gb = False
-    if max_usd is not None and max_usd <= 0:
-        max_usd = None
-        explicit_usd = False
-    if max_rows is not None and max_rows <= 0:
-        max_rows = None
-        explicit_rows = False
-
-    has_explicit = explicit_gb or explicit_usd or explicit_rows
-    return max_gb, max_usd, max_rows, has_explicit
+    return max_gb, max_usd, max_rows
 
 
 def resolve_sql_stdin(sql: str | None, from_stdin: bool) -> str:
@@ -127,6 +101,7 @@ def emit_output(
     cost_diag: object | None = None,
     dry_run_only: bool = False,
     decision: str = "allow",
+    db: str | None = None,
 ) -> None:
     """Emit a single output document (JSON or text)."""
     from dbastion.adapters._base import CostEstimate, ExecutionResult
@@ -152,7 +127,6 @@ def emit_output(
             envelope["estimate"] = est_data
         if cost_blocked and cost_diag is not None:
             envelope["blocked"] = True
-            envelope["decision"] = "deny"
             envelope["cost_error"] = cost_diag.message
         if isinstance(exec_result, ExecutionResult):
             envelope["columns"] = exec_result.columns
@@ -161,11 +135,22 @@ def emit_output(
             envelope["duration_ms"] = exec_result.duration_ms
         if dry_run_only:
             envelope["dry_run"] = True
+        # Include approval info for ask decisions
+        if decision == "ask" and db:
+            envelope["db"] = db
+            envelope["approval_hint"] = (
+                "pipe this result to `dbastion approve` to execute"
+            )
         click.echo(json.dumps(envelope, indent=2, default=str))
     else:
         # Text: decision header for ask/deny
         if decision == "ask":
-            click.echo("decision: ask (use `dbastion exec` to execute)")
+            click.echo("decision: ask")
+            if cost_blocked and cost_diag is not None:
+                click.echo(f"  reason: {cost_diag.message}")
+            click.echo(
+                "  to approve: rerun with | dbastion approve"
+            )
         elif decision == "deny":
             click.echo("decision: deny")
         # Text: policy diagnostics
@@ -176,10 +161,83 @@ def emit_output(
         if isinstance(estimate, CostEstimate):
             click.echo(render_estimate(estimate))
         if cost_blocked and cost_diag is not None:
-            click.echo(f"\nerror: {cost_diag.message}")
             return
         if dry_run_only:
             return
         # Text: execution result
         if isinstance(exec_result, ExecutionResult):
             click.echo(format_execution_result(exec_result, output_format="text"))
+
+
+async def execute_and_emit(
+    config: ConnectionConfig,
+    effective_sql: str,
+    *,
+    adapter: object | None = None,
+    original_sql: str | None = None,
+    tables: list[str] | None = None,
+    dialect: str | None = None,
+    decision_label: str = "approved",
+    policy_result: object | None = None,
+    estimate: object | None = None,
+    output_format: str = "json",
+) -> int:
+    """Execute SQL, emit result, and log. Returns exit code.
+
+    Shared execution path used by both ``query`` (for allowed reads) and
+    ``approve`` (for human-approved queries).
+
+    If *adapter* is provided, uses it and leaves it open (caller manages
+    lifecycle).  Otherwise connects a fresh adapter and closes it after.
+
+    When *policy_result* is provided, emits the rich envelope (with
+    diagnostics, estimate, etc.) via ``emit_output``.  Otherwise emits a
+    simple JSON result.
+    """
+    from dbastion.adapters._registry import get_adapter
+    from dbastion.querylog import log_query
+
+    owns_adapter = adapter is None
+    if owns_adapter:
+        adapter_cls = get_adapter(config.db_type)
+        adapter = adapter_cls()
+        await adapter.connect(config)
+
+    try:
+        exec_result = await adapter.execute(effective_sql, labels=AUTO_LABELS)
+
+        if policy_result is not None:
+            emit_output(
+                output_format, policy_result, estimate=estimate,
+                exec_result=exec_result, decision=decision_label,
+            )
+        else:
+            result: dict[str, object] = {
+                "decision": decision_label,
+                "status": "success",
+                "effective_sql": effective_sql,
+                "columns": exec_result.columns,
+                "rows": exec_result.rows,
+                "row_count": exec_result.row_count,
+                "duration_ms": exec_result.duration_ms,
+            }
+            click.echo(json.dumps(result, indent=2, default=str))
+
+        log_query(
+            sql=original_sql or effective_sql,
+            effective_sql=effective_sql,
+            db=config.name,
+            dialect=dialect,
+            tables=tables or [],
+            blocked=False,
+            decision=decision_label,
+            cost_gb=exec_result.cost.estimated_gb if exec_result.cost else None,
+            cost_usd=exec_result.cost.estimated_cost_usd if exec_result.cost else None,
+            duration_ms=exec_result.duration_ms,
+            labels=AUTO_LABELS,
+        )
+    finally:
+        if owns_adapter:
+            await adapter.close()
+
+    return 0

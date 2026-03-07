@@ -14,25 +14,26 @@ dbastion parses every SQL statement into an AST before it reaches the database.
 - Classifies statements: read, dml, ddl, admin
 - Blocks dangerous patterns: DELETE without WHERE, cartesian joins, `WHERE 1=1`, multi-statement, admin commands
 - Injects LIMIT on unbounded SELECTs
-- Dry-runs queries for cost estimation (BigQuery bytes/$, Postgres EXPLAIN)
+- Dry-runs queries for cost estimation (BigQuery bytes/$, Snowflake partitions, Postgres EXPLAIN)
 - Returns a decision: `allow`, `ask`, or `deny`
 
-## Two-command model
+## Query + Approve model
 
-`dbastion query` executes reads, but only validates writes. `dbastion exec` executes writes.
+`dbastion query` handles all SQL. Reads execute directly. Writes and expensive queries return `decision: ask` — pipe through `dbastion approve` to execute:
 
-In Claude Code, wire it like this:
-
-```json
-{
-  "permissions": {
-    "allow": ["Bash(dbastion query:*)"],
-    "ask":   ["Bash(dbastion exec:*)"]
-  }
-}
+```bash
+dbastion query "SELECT ..." --db prod                         # reads just work
+dbastion query "INSERT ..." --db prod | dbastion approve      # writes need approval
+dbastion query "SELECT ..." --db prod | dbastion approve      # expensive reads too
 ```
 
-The agent runs `query` freely. Writes require human approval through the harness, with the SQL visible in the command line.
+In agent harnesses (Claude Code, Codex), allow `query` freely and set `approve` to prompt:
+
+```bash
+dbastion install claude-code    # or: codex
+```
+
+This configures permissions so `query` and `schema` run freely; `approve` always prompts the human with the full SQL visible for review.
 
 ## Examples
 
@@ -52,10 +53,10 @@ $ dbastion query "SELECT id, name FROM users LIMIT 10" --db duckdb:path=app.db
 }
 ```
 
-### Write (validates only)
+### Write (needs approval)
 
 ```bash
-$ dbastion query "DELETE FROM users WHERE id = 5" --db postgres:dsn=postgresql://localhost/mydb
+$ dbastion query "DELETE FROM users WHERE id = 5" --db prod
 ```
 
 ```json
@@ -63,7 +64,19 @@ $ dbastion query "DELETE FROM users WHERE id = 5" --db postgres:dsn=postgresql:/
   "decision": "ask",
   "classification": "dml",
   "tables": ["users"],
-  "blocked": false
+  "approval_hint": "pipe this result to `dbastion approve` to execute"
+}
+```
+
+```bash
+$ dbastion query "DELETE FROM users WHERE id = 5" --db prod | dbastion approve
+```
+
+```json
+{
+  "decision": "approved",
+  "effective_sql": "DELETE FROM users WHERE id = 5",
+  "row_count": 1
 }
 ```
 
@@ -94,6 +107,8 @@ $ dbastion query "DELETE FROM users" --db duckdb:
 uv tool install 'dbastion[postgres]'    # PostgreSQL
 uv tool install 'dbastion[bigquery]'    # BigQuery
 uv tool install 'dbastion[duckdb]'      # DuckDB
+uv tool install 'dbastion[snowflake]'   # Snowflake
+uv tool install 'dbastion[clickhouse]'  # ClickHouse
 uv tool install 'dbastion[all]'         # everything
 ```
 
@@ -111,6 +126,8 @@ Both `dbastion` and `dbast` (short alias) work after install.
 |------------|---------|-----------------|
 | PostgreSQL | EXPLAIN (JSON) | row estimates |
 | BigQuery   | native dry-run | bytes scanned, USD |
+| Snowflake  | EXPLAIN USING JSON | partitions, bytes |
+| ClickHouse | EXPLAIN ESTIMATE | rows, bytes |
 | DuckDB     | EXPLAIN | query plan |
 
 ## Safety checks
@@ -128,8 +145,8 @@ Both `dbastion` and `dbast` (short alias) work after install.
 ## Commands
 
 ```
-dbastion query <sql>          Reads execute, writes validate only
-dbastion exec <sql>           Execute a validated write
+dbastion query <sql>          Execute reads, validate writes (→ approve)
+dbastion approve              Approve and execute a blocked query (stdin pipe)
 dbastion validate <sql>       Validate without executing
 dbastion schema ls [schema]   List schemas or tables
 dbastion schema show <table>  Show table columns and metadata
@@ -142,13 +159,19 @@ dbastion auth                 Manage credentials
 ```
 --db <conn>          Connection name or type:key=val
 --format json|text   Output format (default: json)
---limit N            Auto-LIMIT value (default: 1000)
---no-limit           Disable auto-LIMIT
+--limit N            Auto-LIMIT value (default: 1000, 0 to disable)
 --dry-run            Estimate cost only, don't execute
---max-gb N           Block if scan exceeds N GB (default: 69, 0 to disable)
---max-usd N          Block if cost exceeds $N
---max-rows N         Block if rows exceed N
 --from-stdin         Read SQL from stdin (query only)
+```
+
+Cost thresholds are configured per-connection in `~/.dbastion/connections.toml`:
+
+```toml
+[prod]
+type = "bigquery"
+project = "my-project"
+max_gb = "50"
+max_usd = "5"
 ```
 
 ## License
