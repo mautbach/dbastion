@@ -103,7 +103,7 @@ def bigquery_oauth_flow(client_secrets_file: str | None = None) -> dict:
     }
 
 
-def load_bigquery_credentials():
+def load_bigquery_credentials() -> object | None:
     """Load BigQuery credentials: dbastion stored → ADC fallback.
 
     Returns a google.auth.credentials.Credentials object or None.

@@ -108,7 +108,8 @@ def emit_output(
     from dbastion.diagnostics.render import render_json
     from dbastion.diagnostics.types import DiagnosticResult
 
-    assert isinstance(policy_result, DiagnosticResult)
+    if not isinstance(policy_result, DiagnosticResult):
+        raise TypeError(f"expected DiagnosticResult, got {type(policy_result).__name__}")
 
     if output_format == "json":
         envelope: dict[str, object] = {"decision": decision}
