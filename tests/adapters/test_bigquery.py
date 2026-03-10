@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("google.cloud.bigquery")
 
-from dbastion.adapters._base import CostUnit
+from dbastion.adapters._base import AdapterError, CostUnit
 from dbastion.adapters.bigquery import BigQueryAdapter
 
 
@@ -124,9 +124,48 @@ class _Client:
         return None
 
 
-def test_dangerous_functions_exists_and_empty() -> None:
+# -- dangerous_functions --
+
+
+def test_dangerous_functions_blocks_external_query() -> None:
     adapter = BigQueryAdapter()
-    assert adapter.dangerous_functions() == frozenset()
+    funcs = adapter.dangerous_functions()
+    assert "external_query" in funcs
+    # ML functions (PREDICT, FORECAST, GENERATE_EMBEDDING) are legitimate
+    # BigQuery features — not escape hatches. Cost estimation handles them.
+    assert "predict" not in funcs
+
+
+def test_external_query_enforced_by_policy() -> None:
+    """End-to-end: verify policy engine actually blocks EXTERNAL_QUERY."""
+    from dbastion.policy import run_policy
+
+    adapter = BigQueryAdapter()
+    result = run_policy(
+        'SELECT * FROM EXTERNAL_QUERY("conn", "SELECT 1")',
+        dialect="bigquery",
+        dangerous_functions=adapter.dangerous_functions(),
+    )
+    blocked = [d for d in result.diagnostics if d.level.name == "ERROR"]
+    assert len(blocked) == 1
+    assert "external_query" in blocked[0].message.lower()
+
+
+def test_ml_predict_not_blocked_by_policy() -> None:
+    """ML.PREDICT is a legitimate BigQuery feature, not a dangerous function."""
+    from dbastion.policy import run_policy
+
+    adapter = BigQueryAdapter()
+    result = run_policy(
+        "SELECT * FROM ML.PREDICT(MODEL mymodel, (SELECT 1))",
+        dialect="bigquery",
+        dangerous_functions=adapter.dangerous_functions(),
+    )
+    errors = [d for d in result.diagnostics if d.level.name == "ERROR"]
+    assert len(errors) == 0
+
+
+# -- execute --
 
 
 def test_execute_uses_result_iter_schema_not_query_job_schema() -> None:
@@ -262,3 +301,10 @@ def test_describe_table_plain_no_extra_metadata() -> None:
 
     assert info.metadata == {}
     json.dumps(info.metadata)
+
+
+def test_describe_table_requires_schema() -> None:
+    adapter = BigQueryAdapter()
+    adapter._client = _Client()  # noqa: SLF001
+    with pytest.raises(AdapterError, match="requires a dataset name"):
+        asyncio.run(adapter.describe_table("events"))

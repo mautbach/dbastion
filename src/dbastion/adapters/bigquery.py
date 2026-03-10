@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from google.cloud import bigquery
@@ -17,8 +18,23 @@ from dbastion.adapters._base import (
     TableInfo,
 )
 
+logger = logging.getLogger(__name__)
+
 # BigQuery on-demand pricing: $6.25 per TB scanned.
 _USD_PER_BYTE = 6.25 / (1024**4)
+
+
+def _bytes_to_cost(total_bytes: int) -> CostEstimate:
+    """Build a CostEstimate from bytes processed."""
+    gb = total_bytes / (1024**3)
+    usd = total_bytes * _USD_PER_BYTE
+    return CostEstimate(
+        raw_value=float(total_bytes),
+        unit=CostUnit.BYTES,
+        estimated_cost_usd=usd,
+        estimated_gb=gb,
+        summary=f"{gb:.2f} GB (~${usd:.4f})",
+    )
 
 
 class BigQueryAdapter:
@@ -37,7 +53,11 @@ class BigQueryAdapter:
         # Load credentials: dbastion stored → ADC fallback
         from dbastion.auth import load_bigquery_credentials
 
-        credentials = load_bigquery_credentials()
+        credentials, source = load_bigquery_credentials()
+        if source == "adc":
+            logger.info("Using Application Default Credentials (no stored dbastion credentials)")
+        elif source == "none":
+            logger.warning("No credentials found — connection may fail")
         self._client = bigquery.Client(
             project=project, location=self._location, credentials=credentials
         )
@@ -61,16 +81,7 @@ class BigQueryAdapter:
             raise AdapterError(f"BigQuery dry-run failed: {e}") from e
 
         total_bytes = job.total_bytes_processed or 0
-        gb = total_bytes / (1024**3)
-        usd = total_bytes * _USD_PER_BYTE
-
-        return CostEstimate(
-            raw_value=float(total_bytes),
-            unit=CostUnit.BYTES,
-            estimated_cost_usd=usd,
-            estimated_gb=gb,
-            summary=f"{gb:.2f} GB (~${usd:.4f})",
-        )
+        return _bytes_to_cost(total_bytes)
 
     async def execute(
         self, sql: str, *, labels: dict[str, str] | None = None
@@ -95,15 +106,7 @@ class BigQueryAdapter:
         cost = None
         total_bytes = query_job.total_bytes_processed
         if total_bytes is not None:
-            gb = total_bytes / (1024**3)
-            usd = total_bytes * _USD_PER_BYTE
-            cost = CostEstimate(
-                raw_value=float(total_bytes),
-                unit=CostUnit.BYTES,
-                estimated_cost_usd=usd,
-                estimated_gb=gb,
-                summary=f"{gb:.2f} GB (~${usd:.4f})",
-            )
+            cost = _bytes_to_cost(total_bytes)
 
         return ExecutionResult(
             columns=columns,
@@ -133,8 +136,12 @@ class BigQueryAdapter:
             raise AdapterError(f"BigQuery list tables failed: {e}") from e
 
     async def describe_table(self, table: str, schema: str | None = None) -> TableInfo:
+        if not schema:
+            raise AdapterError(
+                "BigQuery requires a dataset name. Use `schema show <dataset>.<table>`."
+            )
         client = self._ensure_client()
-        ref = f"{schema}.{table}" if schema else table
+        ref = f"{schema}.{table}"
         try:
             t = client.get_table(ref)
         except Exception as e:
@@ -166,7 +173,7 @@ class BigQueryAdapter:
             meta["num_bytes"] = t.num_bytes
 
         return TableInfo(
-            schema=schema or t.dataset_id,
+            schema=schema,
             name=t.table_id,
             row_count_estimate=t.num_rows,
             columns=columns,
@@ -183,4 +190,8 @@ class BigQueryAdapter:
         return "bigquery"
 
     def dangerous_functions(self) -> frozenset[str]:
-        return frozenset()
+        return frozenset({
+            # Cross-service query execution — can reach Cloud SQL, Spanner, etc.
+            # This is the real escape hatch: runs arbitrary SQL on external databases.
+            "external_query",
+        })

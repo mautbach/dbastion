@@ -103,26 +103,37 @@ def bigquery_oauth_flow(client_secrets_file: str | None = None) -> dict:
     }
 
 
-def load_bigquery_credentials() -> object | None:
+def load_bigquery_credentials() -> tuple[object | None, str]:
     """Load BigQuery credentials: dbastion stored → ADC fallback.
 
-    Returns a google.auth.credentials.Credentials object or None.
+    Returns (credentials, source) where source is one of:
+      "stored"  — loaded from ~/.dbastion/credentials/bigquery.json
+      "adc"     — Application Default Credentials (gcloud, service account, etc.)
+      "none"    — no credentials found
     """
+    import logging
+
+    logger = logging.getLogger("dbastion.auth")
+
     # Try dbastion-stored credentials first
     creds_data = load_credentials("bigquery")
     if creds_data is not None:
         try:
             from google.oauth2.credentials import Credentials
 
-            return Credentials.from_authorized_user_info(creds_data, scopes=BQ_SCOPES)
-        except Exception:
-            pass
+            return Credentials.from_authorized_user_info(creds_data, scopes=BQ_SCOPES), "stored"
+        except Exception as e:
+            logger.warning(
+                "Stored BigQuery credentials are invalid (%s), falling back to ADC. "
+                "Run `dbastion auth bigquery` to re-authenticate.",
+                e,
+            )
 
     # Fall back to Application Default Credentials (gcloud, service account, etc.)
     try:
         import google.auth
 
         credentials, _ = google.auth.default(scopes=BQ_SCOPES)
-        return credentials
+        return credentials, "adc"
     except Exception:
-        return None
+        return None, "none"

@@ -69,7 +69,7 @@ def ls(schema_name: str | None, db: str, output_format: str) -> None:
 @click.option("--db", required=True, envvar="DBASTION_DB", help="Connection name or type:key=val.")
 @click.option("--format", "output_format", type=click.Choice(["json", "text"]), default="json")
 def show(table_ref: str, db: str, output_format: str) -> None:
-    """Show columns of a table. TABLE_REF is schema.table or just table."""
+    """Show columns of a table. TABLE_REF is schema.table (or just table for DBs with defaults)."""
     config = parse_db(db)
 
     if "." in table_ref:
